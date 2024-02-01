@@ -1,16 +1,34 @@
+use std::{
+    fs::{self, File},
+    io::{ErrorKind, Seek},
+    ops::DerefMut,
+    path::{Path, PathBuf},
+};
+
 use anyhow::Context;
 
-use crate::util::sha::Sha256Hash;
+use crate::util::{file::use_path, sha::Sha256Hash};
 
 #[derive(Debug, Clone)]
 pub struct Cafs {
     blob_tree: sled::Tree,
+    big_blob_path: PathBuf,
 }
 
 impl Cafs {
-    pub fn new(db: sled::Db) -> anyhow::Result<Self> {
+    pub fn new(mut path: PathBuf) -> anyhow::Result<Self> {
+        // Ensure that the base directory is present.
+        fs::create_dir_all(&path)?;
+
+        // Open the database
+        let db = sled::open(&*use_path(&mut path, &[Path::new("cafs.sled")]))?;
+
+        // Construct the big blob path
+        let big_blob_path = use_path(&mut path, &[Path::new("v0_cafs_big_blobs")]).clone();
+
         Ok(Cafs {
             blob_tree: db.open_tree(b"v0_blobs")?,
+            big_blob_path,
         })
     }
 
@@ -26,4 +44,54 @@ impl Cafs {
             .get(hash.0)
             .context("failed to lookup entry in resource database")
     }
+
+    pub fn insert_big_blob(&mut self, hash: Sha256Hash, data: &[u8]) -> anyhow::Result<()> {
+        let res_path = use_big_blob_path(&mut self.big_blob_path, hash);
+
+        if let Some(parent) = res_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&*res_path, data)?;
+
+        Ok(())
+    }
+
+    pub fn lookup_big_blob(&mut self, hash: Sha256Hash) -> anyhow::Result<Option<File>> {
+        let res_path = use_big_blob_path(&mut self.big_blob_path, hash);
+
+        // Open file
+        let mut file = match File::open(&*res_path) {
+            Ok(file) => file,
+            Err(err) => {
+                if err.kind() == ErrorKind::NotFound {
+                    return Ok(None);
+                } else {
+                    return Err(err.into());
+                }
+            }
+        };
+
+        // Hash the file to ensure that it is valid.
+        let actual_hash =
+            Sha256Hash::digest_reader(&mut file).context("failed to take hash of blob")?;
+        file.rewind()?;
+
+        if actual_hash != hash {
+            drop(file);
+            log::warn!("hash of big blob was incorrect: expected {hash}, got {actual_hash}.");
+            if let Err(err) = std::fs::remove_file(&*res_path) {
+                log::error!("failed to remove blob filed with hash {hash} but with invalid hash {actual_hash}: {err}");
+            }
+            return Ok(None);
+        }
+
+        Ok(Some(file))
+    }
+}
+
+fn use_big_blob_path(path: &mut PathBuf, hash: Sha256Hash) -> impl DerefMut<Target = &mut PathBuf> {
+    let hash_str = hash.to_string();
+    let comps = [Path::new(&hash_str[0..2]), Path::new(&hash_str[2..])];
+
+    use_path(path, &comps)
 }

@@ -95,6 +95,8 @@ macro_rules! define_le {
 }
 
 define_le! {
+    LeI16 i16,
+    LeU16 u16,
     LeI32 i32,
     LeU32 u32,
     LeI64 i64,

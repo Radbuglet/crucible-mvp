@@ -8,6 +8,7 @@ anyhow = "1.0.79"
 bytemuck = "1.14.1"
 color-backtrace = "0.6.1"
 crucible-shared = { version = "0.1.0", path = "../shared", features = ["host"] }
+drop_guard = "0.3.0"
 env_logger = "0.11.1"
 generic-array = "1.0.0"
 log = "0.4.20"
@@ -18,3 +19,4 @@ wasm-encoder = { version = "0.41.0", features = ["wasmparser"] }
 wasmparser = "0.121.0"
 wasmtime = "17.0.0"
 wasmtime-wasi = "17.0.0"
+zip = "0.6.6"
