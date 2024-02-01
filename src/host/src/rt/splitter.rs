@@ -1,9 +1,8 @@
 use std::{collections::hash_map, future::Future, mem::size_of, ops::Range};
 
 use anyhow::Context;
+use blake3::{hash, Hash};
 use rustc_hash::FxHashMap;
-
-use crate::util::sha::Sha256Hash;
 
 const HASHES_SECTION_NAME: &str = "csplitter0_hashes";
 
@@ -13,7 +12,7 @@ const HASHES_SECTION_NAME: &str = "csplitter0_hashes";
 pub struct WasmSplitResult {
     pub stripped: Vec<u8>,
     pub functions_buf: Vec<u8>,
-    pub functions_map: FxHashMap<Sha256Hash, Range<usize>>,
+    pub functions_map: FxHashMap<Hash, Range<usize>>,
 }
 
 pub fn split_wasm(data: &[u8]) -> WasmSplitResult {
@@ -33,7 +32,7 @@ pub fn split_wasm(data: &[u8]) -> WasmSplitResult {
         // If we found a code section, add it to the code hashes
         if let CodeSectionEntry(body) = &payload {
             let data = &data[body.range()];
-            let hash = Sha256Hash::digest(data);
+            let hash = hash(data);
 
             // If this is a new section, add it to the buffer.
             if let hash_map::Entry::Vacant(entry) = functions_map.entry(hash) {
@@ -43,7 +42,7 @@ pub fn split_wasm(data: &[u8]) -> WasmSplitResult {
             }
 
             // Mark the entry in the table
-            hashes_data.extend_from_slice(&hash.0);
+            hashes_data.extend_from_slice(hash.as_bytes());
         }
 
         // Write non-filtered sections into the output module
@@ -94,13 +93,13 @@ pub fn split_wasm(data: &[u8]) -> WasmSplitResult {
 // === Merge === //
 
 pub struct CodeReceiver<'a> {
-    hashes: &'a [Sha256Hash],
+    hashes: &'a [Hash],
     buf: &'a mut Vec<u8>,
     len: &'a mut u32,
 }
 
 impl<'a> CodeReceiver<'a> {
-    pub fn hashes(&self) -> &'a [Sha256Hash] {
+    pub fn hashes(&self) -> &'a [Hash] {
         self.hashes
     }
 
@@ -131,14 +130,15 @@ where
 
         anyhow::ensure!(hashes.is_none(), "more than one splitter section specified");
         anyhow::ensure!(
-            payload.data().len() % size_of::<Sha256Hash>() == 0,
+            payload.data().len() % size_of::<Hash>() == 0,
             "splitter hashes section has an invalid size"
         );
 
         hashes = Some(unsafe {
+            // FIXME: blake3::Hash is not `repr(transparent)`
             std::slice::from_raw_parts(
-                payload.data().as_ptr().cast::<Sha256Hash>(),
-                payload.data().len() / size_of::<Sha256Hash>(),
+                payload.data().as_ptr().cast::<Hash>(),
+                payload.data().len() / size_of::<Hash>(),
             )
         });
     }

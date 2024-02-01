@@ -1,13 +1,15 @@
 use std::{
     fs::{self, File},
-    io::{ErrorKind, Seek},
+    io::{self, ErrorKind, Seek},
     ops::DerefMut,
     path::{Path, PathBuf},
 };
 
 use anyhow::Context;
 
-use crate::util::{file::use_path, sha::Sha256Hash};
+use crate::util::file::use_path;
+
+use blake3::Hash;
 
 #[derive(Debug, Clone)]
 pub struct Cafs {
@@ -32,20 +34,20 @@ impl Cafs {
         })
     }
 
-    pub fn insert_blob(&mut self, hash: Sha256Hash, data: &[u8]) -> anyhow::Result<()> {
+    pub fn insert_blob(&mut self, hash: Hash, data: &[u8]) -> anyhow::Result<()> {
         self.blob_tree
-            .insert(hash.0, data)
+            .insert(hash.as_bytes(), data)
             .context("failed to insert resource into database")
             .map(|_| ())
     }
 
-    pub fn lookup_blob(&mut self, hash: Sha256Hash) -> anyhow::Result<Option<sled::IVec>> {
+    pub fn lookup_blob(&mut self, hash: Hash) -> anyhow::Result<Option<sled::IVec>> {
         self.blob_tree
-            .get(hash.0)
+            .get(hash.as_bytes())
             .context("failed to lookup entry in resource database")
     }
 
-    pub fn insert_big_blob(&mut self, hash: Sha256Hash, data: &[u8]) -> anyhow::Result<()> {
+    pub fn insert_big_blob(&mut self, hash: Hash, data: &[u8]) -> anyhow::Result<()> {
         let res_path = use_big_blob_path(&mut self.big_blob_path, hash);
 
         if let Some(parent) = res_path.parent() {
@@ -56,7 +58,7 @@ impl Cafs {
         Ok(())
     }
 
-    pub fn lookup_big_blob(&mut self, hash: Sha256Hash) -> anyhow::Result<Option<File>> {
+    pub fn lookup_big_blob(&mut self, hash: Hash) -> anyhow::Result<Option<File>> {
         let res_path = use_big_blob_path(&mut self.big_blob_path, hash);
 
         // Open file
@@ -72,8 +74,11 @@ impl Cafs {
         };
 
         // Hash the file to ensure that it is valid.
-        let actual_hash =
-            Sha256Hash::digest_reader(&mut file).context("failed to take hash of blob")?;
+        let actual_hash = {
+            let mut hasher = blake3::Hasher::new();
+            io::copy(&mut file, &mut hasher).context("failed to take hash of blob")?;
+            hasher.finalize()
+        };
         file.rewind()?;
 
         if actual_hash != hash {
@@ -89,8 +94,8 @@ impl Cafs {
     }
 }
 
-fn use_big_blob_path(path: &mut PathBuf, hash: Sha256Hash) -> impl DerefMut<Target = &mut PathBuf> {
-    let hash_str = hash.to_string();
+fn use_big_blob_path(path: &mut PathBuf, hash: Hash) -> impl DerefMut<Target = &mut PathBuf> {
+    let hash_str = hash.to_hex();
     let comps = [Path::new(&hash_str[0..2]), Path::new(&hash_str[2..])];
 
     use_path(path, &comps)

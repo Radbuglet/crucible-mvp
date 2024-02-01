@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.79"
+blake3 = "1.5.0"
 bytemuck = "1.14.1"
 color-backtrace = "0.6.1"
 crucible-shared = { version = "0.1.0", path = "../shared", features = ["host"] }
@@ -13,7 +14,6 @@ env_logger = "0.11.1"
 generic-array = "1.0.0"
 log = "0.4.20"
 rustc-hash = "1.1.0"
-sha2 = "0.10.8"
 sled = "0.34.7"
 wasm-encoder = { version = "0.41.0", features = ["wasmparser"] }
 wasmparser = "0.121.0"
