@@ -130,6 +130,16 @@ impl<T> Clone for WasmPtr<T> {
     }
 }
 
+impl<T> WasmPtr<T> {
+    #[cfg(feature = "guest")]
+    pub fn new_guest(ptr: *const T) -> Self {
+        Self {
+            _ty: PhantomData,
+            addr: LeU32::new(ptr as u32),
+        }
+    }
+}
+
 #[repr(C)]
 pub struct WasmSlice<T> {
     pub start: WasmPtr<T>,
@@ -156,3 +166,25 @@ impl<T> Clone for WasmSlice<T> {
 unsafe impl<T: 'static> Pod for WasmSlice<T> {}
 
 unsafe impl<T: 'static> Zeroable for WasmSlice<T> {}
+
+impl<T> WasmSlice<T> {
+    #[cfg(feature = "guest")]
+    pub fn new_guest(ptr: *const [T]) -> Self {
+        use core::ptr::NonNull;
+
+        let ptr = NonNull::new(ptr as *mut [T]).unwrap(); // N.B. pointers to slices can never be null
+
+        Self {
+            start: WasmPtr::new_guest(ptr.as_ptr().cast::<T>()),
+            len: LeU32::new(ptr.len() as u32),
+        }
+    }
+}
+
+// === Raw Structures === //
+
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+#[repr(C)]
+pub struct DemoStructure {
+    pub funnies: WasmSlice<u32>,
+}

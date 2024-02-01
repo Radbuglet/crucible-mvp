@@ -498,6 +498,9 @@ checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
 [[package]]
 name = "crucible-guest"
 version = "0.1.0"
+dependencies = [
+ "crucible-shared",
+]
 
 [[package]]
 name = "crucible-host"
@@ -506,6 +509,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "color-backtrace",
+ "crucible-shared",
  "env_logger",
  "generic-array 1.0.0",
  "log",

@@ -7,6 +7,7 @@ edition = "2021"
 anyhow = "1.0.79"
 bytemuck = "1.14.1"
 color-backtrace = "0.6.1"
+crucible-shared = { version = "0.1.0", path = "../shared" }
 env_logger = "0.11.1"
 generic-array = "1.0.0"
 log = "0.4.20"

@@ -1,7 +1,15 @@
-pub trait ExtensionFor<T: ?Sized> {}
+pub trait ExtensionFor<T: ?Sized> {
+    fn v(&self) -> &T;
 
-impl<T: ?Sized> ExtensionFor<T> for T {}
+    fn v_mut(&mut self) -> &mut T;
+}
 
-pub trait All {}
+impl<T: ?Sized> ExtensionFor<T> for T {
+    fn v(&self) -> &T {
+        self
+    }
 
-impl<T: ?Sized> All for T {}
+    fn v_mut(&mut self) -> &mut T {
+        self
+    }
+}
