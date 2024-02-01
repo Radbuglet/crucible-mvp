@@ -1,6 +1,6 @@
 use anyhow::Context;
 use crucible_host::rt::marshal::MemoryExt;
-use crucible_shared::DemoStructure;
+use crucible_shared::{DemoStructure, WasmSlice, WasmStr};
 
 fn main() -> anyhow::Result<()> {
     let module_data = std::fs::read(std::env::args().nth(1).context("missing module path")?)?;
@@ -32,6 +32,36 @@ fn main() -> anyhow::Result<()> {
             let funnies = data.load_slice(args.funnies)?;
 
             dbg!(funnies);
+
+            Ok(())
+        },
+    )?;
+
+    linker.func_wrap(
+        "crucible0",
+        "set_name",
+        move |caller: wasmtime::Caller<'_, StoreState>, name: u64| {
+            let data = caller.data().main_memory.unwrap();
+            let data = data.data(&caller);
+
+            let name = data.load_str(WasmStr::new_host(name))?;
+            dbg!(name);
+
+            Ok(())
+        },
+    )?;
+
+    linker.func_wrap(
+        "crucible0",
+        "log_strings",
+        move |caller: wasmtime::Caller<'_, StoreState>, names: u64| {
+            let data = caller.data().main_memory.unwrap();
+            let data = data.data(&caller);
+
+            let names = data.load_slice::<WasmStr>(WasmSlice::new_host(names))?;
+            for name in names {
+                dbg!(data.load_str(*name)?);
+            }
 
             Ok(())
         },

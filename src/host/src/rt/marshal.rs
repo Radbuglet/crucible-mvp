@@ -2,7 +2,7 @@ use std::{any::type_name, marker::PhantomData};
 
 use anyhow::Context;
 use bytemuck::Pod;
-use crucible_shared::{WasmPtr, WasmSlice};
+use crucible_shared::{WasmPtr, WasmSlice, WasmStr};
 
 use crate::util::extension::ExtensionFor;
 
@@ -61,12 +61,23 @@ pub trait MemoryExt: ExtensionFor<[u8]> {
         })
     }
 
+    fn load_str_raw(&self, base: u32, len: u32) -> anyhow::Result<&str> {
+        self.load_range(base, len)
+            .and_then(|data| std::str::from_utf8(data).context("invalid UTF-8"))
+    }
+
     fn load_struct<T: Pod>(&self, ptr: WasmPtr<T>) -> anyhow::Result<&T> {
         self.load_struct_raw(ptr.addr.get())
     }
 
-    fn load_slice<T: Pod>(&self, data: WasmSlice<T>) -> anyhow::Result<&[T]> {
-        self.load_slice_raw(data.start.addr.get(), data.len.get())
+    fn load_slice<T: Pod>(&self, ptr: WasmSlice<T>) -> anyhow::Result<&[T]> {
+        let (base, len) = ptr.into_raw();
+        self.load_slice_raw(base.addr.get(), len.get())
+    }
+
+    fn load_str(&self, ptr: WasmStr) -> anyhow::Result<&str> {
+        let (base, len) = ptr.0.into_raw();
+        self.load_str_raw(base.addr.get(), len.get())
     }
 }
 
