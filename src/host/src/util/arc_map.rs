@@ -104,11 +104,11 @@ impl<K, V, S: hash::BuildHasher> ArcMap<K, V, S> {
 #[derive_where(Clone)]
 pub struct ArcMapRef<K, V, S>(ManuallyDrop<Arc<ArcMapEntry<K, V, S>>>);
 
-impl<K: fmt::Debug, V: fmt::Debug, S> fmt::Debug for ArcMapEntry<K, V, S> {
+impl<K: fmt::Debug, V: fmt::Debug, S> fmt::Debug for ArcMapRef<K, V, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ArcMapEntry")
-            .field("key", &self.key)
-            .field("value", &self.value)
+            .field("key", &self.0.key)
+            .field("value", &self.0.value)
             .finish()
     }
 }
