@@ -1,8 +1,10 @@
-use std::{collections::hash_map, future::Future, mem::size_of, ops::Range};
+use std::{future::Future, mem::size_of, ops::Range};
 
 use anyhow::Context;
 use blake3::{hash, Hash};
-use rustc_hash::FxHashMap;
+use hashbrown::hash_map;
+
+use crate::util::map::FxHashMap;
 
 const HASHES_SECTION_NAME: &str = "csplitter0_hashes";
 

@@ -1,102 +1,120 @@
-use std::{
-    fs::{self, File},
-    io::{self, ErrorKind, Seek},
-    ops::DerefMut,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use crate::util::file::use_path;
+use blake3::{Hash, Hasher};
 
-use blake3::Hash;
+use tokio::{
+    fs::{self, File},
+    io::{self, AsyncSeekExt, ErrorKind},
+    sync::OnceCell,
+};
 
-#[derive(Debug, Clone)]
+use crate::util::{
+    io::SyncWriteAsAsync,
+    map::{FxArcMap, FxArcMapRef},
+};
+
+#[derive(Debug)]
 pub struct Cafs {
     blob_tree: sled::Tree,
     big_blob_path: PathBuf,
+    big_blob_fds: FxArcMap<Hash, OnceCell<File>>,
 }
 
 impl Cafs {
-    pub fn new(mut path: PathBuf) -> anyhow::Result<Self> {
+    pub async fn new(path: &Path) -> anyhow::Result<Self> {
         // Ensure that the base directory is present.
-        fs::create_dir_all(&path)?;
+        fs::create_dir_all(path).await?;
 
         // Open the database
-        let db = sled::open(&*use_path(&mut path, &[Path::new("cafs.sled")]))?;
+        let db = sled::open(path.join("cafs.sled"))?;
 
         // Construct the big blob path
-        let big_blob_path = use_path(&mut path, &[Path::new("v0_cafs_big_blobs")]).clone();
+        let big_blob_path = path.join("v0_cafs_big_blobs");
 
         Ok(Cafs {
             blob_tree: db.open_tree(b"v0_blobs")?,
             big_blob_path,
+            big_blob_fds: FxArcMap::new(),
         })
     }
 
-    pub fn insert_blob(&mut self, hash: Hash, data: &[u8]) -> anyhow::Result<()> {
+    pub fn insert_blob(&self, hash: Hash, data: &[u8]) -> anyhow::Result<()> {
         self.blob_tree
             .insert(hash.as_bytes(), data)
             .context("failed to insert resource into database")
             .map(|_| ())
     }
 
-    pub fn lookup_blob(&mut self, hash: Hash) -> anyhow::Result<Option<sled::IVec>> {
+    pub fn lookup_blob(&self, hash: Hash) -> anyhow::Result<Option<sled::IVec>> {
         self.blob_tree
             .get(hash.as_bytes())
             .context("failed to lookup entry in resource database")
     }
 
-    pub fn insert_big_blob(&mut self, hash: Hash, data: &[u8]) -> anyhow::Result<()> {
-        let res_path = use_big_blob_path(&mut self.big_blob_path, hash);
+    pub async fn load_big_blob(&self, hash: Hash) -> anyhow::Result<CafsBlob> {
+        let entry = self.big_blob_fds.get(&hash, || (hash, OnceCell::new()));
 
-        if let Some(parent) = res_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&*res_path, data)?;
+        entry
+            .get_or_try_init::<anyhow::Error, _, _>(|| async {
+                // Determine the path of the blob
+                let blob_path = {
+                    let hash = hash.to_hex();
+                    let mut blob_path = self.big_blob_path.clone();
+                    blob_path.push(&hash[0..2]);
+                    blob_path.push(&hash[2..]);
+                    blob_path
+                };
 
-        Ok(())
-    }
-
-    pub fn lookup_big_blob(&mut self, hash: Hash) -> anyhow::Result<Option<File>> {
-        let res_path = use_big_blob_path(&mut self.big_blob_path, hash);
-
-        // Open file
-        let mut file = match File::open(&*res_path) {
-            Ok(file) => file,
-            Err(err) => {
-                if err.kind() == ErrorKind::NotFound {
-                    return Ok(None);
-                } else {
-                    return Err(err.into());
+                // Ensure that its parent directory is present
+                if let Some(parent) = blob_path.parent() {
+                    fs::create_dir_all(parent).await?;
                 }
-            }
-        };
 
-        // Hash the file to ensure that it is valid.
-        let actual_hash = {
-            let mut hasher = blake3::Hasher::new();
-            io::copy(&mut file, &mut hasher).context("failed to take hash of blob")?;
-            hasher.finalize()
-        };
-        file.rewind()?;
+                // Attempt to load the file as it is on disk
+                match File::open(&blob_path).await {
+                    Ok(mut file) => {
+                        // Validate the file's integrity
+                        let mut hasher = Hasher::new();
+                        io::copy(&mut file, &mut SyncWriteAsAsync(&mut hasher)).await?;
+                        let actual_hash = hasher.finalize();
 
-        if actual_hash != hash {
-            drop(file);
-            log::warn!("hash of big blob was incorrect: expected {hash}, got {actual_hash}.");
-            if let Err(err) = std::fs::remove_file(&*res_path) {
-                log::error!("failed to remove blob filed with hash {hash} but with invalid hash {actual_hash}: {err}");
-            }
-            return Ok(None);
-        }
+                        if hash == actual_hash {
+                            file.rewind().await?;
+                            return Ok(file);
+                        }
 
-        Ok(Some(file))
+						// If the file doesn't match, we need to re-create it.
+						log::warn!("blob with expected hash {hash} doesn't match actual hash {actual_hash}");
+
+						// (fallthrough)
+                    }
+                    Err(err) => {
+						// If the operation failed for some reason other than the file being un-findable,
+						// we have an unrecoverable IO error which we should raise.
+						if err.kind() != ErrorKind::NotFound {
+							return Err(err.into());
+						}
+
+						// (fallthrough)
+					},
+                }
+
+				// Otherwise, create a temporary file.
+
+				// ...and allow the user to write to it.
+				// TODO
+
+				// Validate the hash to ensure that the blob was downloaded correctly.
+				// TODO
+
+                todo!();
+            })
+            .await?;
+
+        Ok(CafsBlob(entry))
     }
 }
 
-fn use_big_blob_path(path: &mut PathBuf, hash: Hash) -> impl DerefMut<Target = &mut PathBuf> {
-    let hash_str = hash.to_hex();
-    let comps = [Path::new(&hash_str[0..2]), Path::new(&hash_str[2..])];
-
-    use_path(path, &comps)
-}
+pub struct CafsBlob(FxArcMapRef<Hash, OnceCell<File>>);
