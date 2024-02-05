@@ -1,5 +1,5 @@
 [package]
-name = "example-guest"
+name = "wasmall"
 version = "0.1.0"
 edition = "2021"
 
