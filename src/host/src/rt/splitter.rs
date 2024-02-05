@@ -57,8 +57,6 @@ pub struct WasmSplitResult {
 pub fn split_wasm(data: &[u8]) -> anyhow::Result<WasmSplitResult> {
     use wasmparser::Payload::*;
 
-    let parser = wasmparser::Parser::new(0);
-
     // Run a first pass of the parser, collecting the ranges of each section affected by a relocation.
     // We use these relocations to determine parts of the function code should be zeroed during hashing,
     // leaving their specific values to be supplied by the stripped binary hashes table.
@@ -71,7 +69,7 @@ pub fn split_wasm(data: &[u8]) -> anyhow::Result<WasmSplitResult> {
 
     let mut all_relocations = FxHashMap::<u32, Vec<(u32, RelocationSize)>>::default();
 
-    for payload in parser.clone().parse_all(data) {
+    for payload in wasmparser::Parser::new(0).parse_all(data) {
         let payload = payload?;
 
         let CustomSection(cs) = &payload else {
@@ -161,7 +159,7 @@ pub fn split_wasm(data: &[u8]) -> anyhow::Result<WasmSplitResult> {
     // size.
     let mut section_start = 0;
 
-    for payload in parser.parse_all(data) {
+    for payload in wasmparser::Parser::new(0).parse_all(data) {
         let payload = payload?;
 
         // Determine whether this payload actually corresponds to a real section in the binary. Versions
@@ -233,7 +231,7 @@ pub fn split_wasm(data: &[u8]) -> anyhow::Result<WasmSplitResult> {
         }
 
         // Write non-filtered sections into the output module
-        if is_real && !matches!(payload, CodeSectionStart { .. } | CustomSection(_),) {
+        if is_real && !matches!(payload, CodeSectionStart { .. } | CustomSection(_)) {
             // Write it to the output stream verbatim
             struct VerbatimSection<'a> {
                 id: u8,
@@ -248,13 +246,15 @@ pub fn split_wasm(data: &[u8]) -> anyhow::Result<WasmSplitResult> {
 
             impl wasm_encoder::Encode for VerbatimSection<'_> {
                 fn encode(&self, sink: &mut Vec<u8>) {
-                    sink.extend_from_slice(self.data);
+                    self.data.encode(sink);
                 }
             }
 
             let (id, range) = payload.as_section().unwrap();
-            let data = &data[range];
-            writer.section(&VerbatimSection { id, data });
+            writer.section(&VerbatimSection {
+                id,
+                data: &data[range],
+            });
         }
     }
 
@@ -292,9 +292,12 @@ impl<'a> CodeReceiver<'a> {
     }
 }
 
-pub async fn merge_wasm<F>(data: &mut Vec<u8>, f: F) -> anyhow::Result<()>
+pub async fn merge_wasm<'b, F>(data: &mut Vec<u8>, f: F) -> anyhow::Result<()>
 where
-    F: FnOnce(CodeReceiver<'_>) -> Box<dyn Future<Output = anyhow::Result<()>> + '_>,
+    F: for<'a> FnOnce(
+        [&'a &'b (); 0],
+        CodeReceiver<'a>,
+    ) -> Box<dyn Future<Output = anyhow::Result<()>> + 'a>,
 {
     // Scan for the hash section
     let parser = wasmparser::Parser::new(0);
@@ -347,11 +350,14 @@ where
 
     // Now, let's populate this vector.
     let mut len = 0;
-    Box::into_pin(f(CodeReceiver {
-        hashes,
-        buf: data,
-        len: &mut len,
-    }))
+    Box::into_pin(f(
+        [],
+        CodeReceiver {
+            hashes,
+            buf: data,
+            len: &mut len,
+        },
+    ))
     .await?;
 
     // Finally, let's fill out the fields we left as placeholders.
