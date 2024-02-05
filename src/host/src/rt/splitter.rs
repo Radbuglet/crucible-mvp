@@ -47,6 +47,25 @@ pub fn split_wasm(data: &[u8]) -> WasmSplitResult {
             hashes_data.extend_from_slice(hash.as_bytes());
         }
 
+        if let CustomSection(cs) = &payload {
+            if cs.name().starts_with("reloc.") {
+                let mut reader = wasmparser::BinaryReader::new(cs.data());
+
+                let section = reader.read_var_u32().unwrap();
+                let count = reader.read_var_u32().unwrap();
+
+                println!("RELOCATION SECTION {} (WASM index: {})", cs.name(), section);
+
+                for entry in 0..count {
+                    let ty = reader.read_u8().unwrap();
+                    let offset = reader.read_var_u32().unwrap();
+                    let index = reader.read_var_u32().unwrap();
+
+                    println!("- {entry}: ty={ty} offset={offset} index={index}");
+                }
+            }
+        }
+
         // Write non-filtered sections into the output module
         if !matches!(
             payload,

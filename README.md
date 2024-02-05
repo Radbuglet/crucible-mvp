@@ -18,13 +18,12 @@ for ((i=0; i<"${#args[@]}"; ++i)); do
     esac
 done
 
-path/to/rust-lld "${args[@]}" -r
+$(rustc --print=sysroot)/lib/rustlib/$(rustc -vV | awk '/host:/ {print $2}')/bin/rust-lld "${args[@]}" -r
 ```
 
 In `start.sh`...
 
 ```shell
-cargo clean -p crucible-guest
 cargo rustc -p crucible-guest --target wasm32-wasi -- -C linker=./my_linker.sh -C linker-flavor=wasm-ld
 ```
 
