@@ -18,10 +18,14 @@ fn main() {
 
     unsafe {
         read_my_struct(WasmPtr::new_guest(&demo));
-        set_name(WasmStr::new_guest(format!("whee {}", 1 + 1).as_str()));
+        set_name(WasmStr::new_guest(format!("whee woo {}", 1 + 1).as_str()));
         log_strings(WasmSlice::new_guest(&[
             WasmStr::new_guest(format!("whee {}", 2 + 1).as_str()),
             WasmStr::new_guest(format!("woo {}", 3 + 1).as_str()),
         ]));
     }
+
+    dbg!(woo as usize);
 }
+
+fn woo() {}

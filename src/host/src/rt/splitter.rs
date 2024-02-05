@@ -2,11 +2,48 @@ use std::{future::Future, mem::size_of, ops::Range};
 
 use anyhow::Context;
 use blake3::{hash, Hash};
-use hashbrown::hash_map;
+use wasmparser::BinaryReader;
 
 use crate::util::map::FxHashMap;
 
+// === Shared === //
+
 const HASHES_SECTION_NAME: &str = "csplitter0_hashes";
+
+fn rewrite_relocated<Rewriter>(
+    buf: &[u8],
+    writer: &mut Vec<u8>,
+    replacements: impl IntoIterator<Item = (usize, Rewriter)>,
+) -> anyhow::Result<()>
+where
+    Rewriter: FnOnce(&[u8], &mut Vec<u8>) -> anyhow::Result<usize>,
+{
+    // Invariant: `buf_cursor` is always less than or equal to the `buf` length.
+    let mut buf_cursor = 0;
+
+    for (reloc_start, replace_with) in replacements {
+        // While there are still relocations affecting bytes in our at the end of our buffer...
+        debug_assert!(reloc_start >= buf_cursor);
+
+        if reloc_start > buf.len() {
+            break;
+        }
+
+        // Push the bytes up until the start of the relocation.
+        writer.extend_from_slice(&buf[buf_cursor..reloc_start]);
+
+        // Push the new relocation bytes.
+        let reloc_end = reloc_start + replace_with(&buf[reloc_start..], writer)?;
+
+        // Bump the `buf_cursor`
+        buf_cursor = reloc_end;
+    }
+
+    // Ensure that we write the remaining bytes of our buffer.
+    writer.extend_from_slice(&buf[buf_cursor..]);
+
+    Ok(())
+}
 
 // === Split === //
 
@@ -17,63 +54,186 @@ pub struct WasmSplitResult {
     pub functions_map: FxHashMap<Hash, Range<usize>>,
 }
 
-pub fn split_wasm(data: &[u8]) -> WasmSplitResult {
+pub fn split_wasm(data: &[u8]) -> anyhow::Result<WasmSplitResult> {
     use wasmparser::Payload::*;
 
     let parser = wasmparser::Parser::new(0);
+
+    // Run a first pass of the parser, collecting the ranges of each section affected by a relocation.
+    // We use these relocations to determine parts of the function code should be zeroed during hashing,
+    // leaving their specific values to be supplied by the stripped binary hashes table.
+    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    enum RelocationSize {
+        U32,
+        VarU32,
+        VarI32,
+    }
+
+    let mut all_relocations = FxHashMap::<u32, Vec<(u32, RelocationSize)>>::default();
+
+    for payload in parser.clone().parse_all(data) {
+        let payload = payload?;
+
+        let CustomSection(cs) = &payload else {
+            continue;
+        };
+
+        if !cs.name().starts_with("reloc.") {
+            continue;
+        }
+
+        // Format: https://github.com/WebAssembly/tool-conventions/blob/4dd47d204df0c789c23d246bc4496631b5c199c4/Linking.md#relocation-sections
+        let mut reader = BinaryReader::new_with_offset(cs.data(), cs.data_offset());
+        let section = reader.read_var_u32()?;
+        let count = reader.read_var_u32()?;
+
+        let offsets = all_relocations.entry(section).or_default();
+
+        for i in 0..count {
+            let start_offset = reader.original_position();
+            let ty = reader.read_u8()?;
+            let offset = reader.read_var_u32()?;
+            let _index = reader.read_var_u32()?;
+
+            let (ty_size, expecting_addend) = match ty {
+                // R_WASM_FUNCTION_INDEX_LEB
+                0 => (RelocationSize::VarU32, false),
+                // R_WASM_TABLE_INDEX_SLEB
+                1 => (RelocationSize::VarI32, false),
+                // R_WASM_TABLE_INDEX_I32
+                2 => (RelocationSize::U32, false),
+                // R_WASM_MEMORY_ADDR_LEB
+                3 => (RelocationSize::VarU32, true),
+                // R_WASM_MEMORY_ADDR_SLEB
+                4 => (RelocationSize::VarI32, true),
+                // R_WASM_MEMORY_ADDR_I32
+                5 => (RelocationSize::U32, true),
+                // R_WASM_TYPE_INDEX_LEB
+                6 => (RelocationSize::VarU32, false),
+                // R_WASM_GLOBAL_INDEX_LEB
+                7 => (RelocationSize::VarU32, false),
+                // R_WASM_FUNCTION_OFFSET_I32
+                8 => (RelocationSize::U32, true),
+                // R_WASM_SECTION_OFFSET_I32
+                9 => (RelocationSize::U32, true),
+                // R_WASM_EVENT_INDEX_LEB
+                10 => (RelocationSize::VarU32, false),
+                // R_WASM_GLOBAL_INDEX_I32
+                13 => (RelocationSize::U32, false),
+                _ => anyhow::bail!(
+                    "unknown relocation kind {ty} at offset {start_offset} (index {i})"
+                ),
+            };
+
+            if expecting_addend {
+                let _addend = reader.read_var_u32()?;
+            }
+
+            offsets.push((offset, ty_size));
+        }
+    }
+
+    for list in all_relocations.values_mut() {
+        list.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    }
+
+    // Now, run a second pass building both the stripped binary and the hashed function collection.
+
+    // The writer for the stripped binary.
     let mut writer = wasm_encoder::Module::new();
 
+    // A buffer of all hashed function descriptors glued back to back.
     let mut functions_buf = Vec::new();
-    let mut functions_map = FxHashMap::default();
-    let mut hashes_data = Vec::<u8>::new();
 
-    // Extract all function code from the binary
+    // A map from function hashes to the range of bytes describing them in the `functions_buf`
+    let mut functions_map = FxHashMap::default();
+
+    // A buffer with all the data needed for the function hashes section.
+    let mut func_segment_builder = Vec::<u8>::new();
+
+    // A counter for the current real section.
+    let mut next_section_idx = 0u32;
+
+    // The remaining list of relocations to apply on the current section.
+    let mut section_relocations = all_relocations.get(&0).map_or(&[][..], |v| v.as_slice());
+
+    // The byte offset to the start of the section, which is the offset of the first byte after the
+    // size.
+    let mut section_start = 0;
+
     for payload in parser.parse_all(data) {
-        let payload = payload.unwrap();
+        let payload = payload?;
+
+        // Determine whether this payload actually corresponds to a real section in the binary. Versions
+        // are part of the header, `End` sections should essential be EOFs, and `CodeSectionEntry` is
+        // an element of the actual `CodeSectionStart` section.
+        let is_real = !matches!(payload, Version { .. } | End(_) | CodeSectionEntry(_));
+
+        // Update section state
+        if is_real {
+            section_start = payload.as_section().unwrap().1.start;
+            section_relocations = all_relocations
+                .get(&next_section_idx)
+                .map_or(&[][..], |v| v.as_slice());
+            next_section_idx += 1;
+        }
 
         // If we found a code section, add it to the code hashes
         if let CodeSectionEntry(body) = &payload {
-            let data = &data[body.range()];
-            let hash = hash(data);
+            let body_rel_start = body.range().start - section_start;
 
-            // If this is a new section, add it to the buffer.
-            if let hash_map::Entry::Vacant(entry) = functions_map.entry(hash) {
-                let start = functions_buf.len();
-                functions_buf.extend_from_slice(data);
-                entry.insert(start..functions_buf.len());
+            // Consume through the `section_relocations` buffer until we can see this code section.
+            while section_relocations
+                .first()
+                .filter(|(loc, _)| (*loc as usize) < body_rel_start)
+                .is_some()
+            {
+                section_relocations = &section_relocations[1..];
             }
 
-            // Mark the entry in the table
-            hashes_data.extend_from_slice(hash.as_bytes());
-        }
+            // Write the function data with all the relocations applied.
+            let start_in_func_buf = functions_buf.len();
+            rewrite_relocated(
+                &data[body.range()],
+                &mut functions_buf,
+                section_relocations.iter().map(|(offset, size)| {
+                    (
+                        *offset as usize - body_rel_start,
+                        move |buf: &[u8], writer: &mut Vec<_>| match size {
+                            RelocationSize::U32 => {
+                                anyhow::ensure!(buf.len() >= 4);
+                                writer.extend_from_slice(&[0, 0, 0, 0]);
+                                Ok(4)
+                            }
+                            RelocationSize::VarU32 | RelocationSize::VarI32 => {
+                                let mut len = 0;
+                                for ch in buf.iter().take(5) {
+                                    len += 1;
+                                    if ch & 0x80 == 0 {
+                                        break;
+                                    }
+                                }
 
-        if let CustomSection(cs) = &payload {
-            if cs.name().starts_with("reloc.") {
-                let mut reader = wasmparser::BinaryReader::new(cs.data());
+                                writer.push(0);
+                                Ok(len)
+                            }
+                        },
+                    )
+                }),
+            )?;
 
-                let section = reader.read_var_u32().unwrap();
-                let count = reader.read_var_u32().unwrap();
+            let function_data = &mut functions_buf[start_in_func_buf..];
 
-                println!("RELOCATION SECTION {} (WASM index: {})", cs.name(), section);
+            // Hash the function and add it into the hashes section.
+            let hash = hash(function_data);
+            functions_map.insert(hash, start_in_func_buf..functions_buf.len());
 
-                for entry in 0..count {
-                    let ty = reader.read_u8().unwrap();
-                    let offset = reader.read_var_u32().unwrap();
-                    let index = reader.read_var_u32().unwrap();
-
-                    println!("- {entry}: ty={ty} offset={offset} index={index}");
-                }
-            }
+            // TODO: Include relocation locations
+            func_segment_builder.extend_from_slice(hash.as_bytes());
         }
 
         // Write non-filtered sections into the output module
-        if !matches!(
-            payload,
-            // If this payload corresponds to a real section...
-            Version { .. } | End(_) | CodeSectionEntry(_) |
-			// ...and we don't want to filter it out...
-			CodeSectionStart { .. } | CustomSection(_),
-        ) {
+        if is_real && !matches!(payload, CodeSectionStart { .. } | CustomSection(_),) {
             // Write it to the output stream verbatim
             struct VerbatimSection<'a> {
                 id: u8,
@@ -101,14 +261,14 @@ pub fn split_wasm(data: &[u8]) -> WasmSplitResult {
     // Add the function hashes section to the buffer
     writer.section(&wasm_encoder::CustomSection {
         name: HASHES_SECTION_NAME.into(),
-        data: hashes_data.as_slice().into(),
+        data: func_segment_builder.as_slice().into(),
     });
 
-    WasmSplitResult {
+    Ok(WasmSplitResult {
         stripped: writer.finish(),
         functions_buf,
         functions_map,
-    }
+    })
 }
 
 // === Merge === //
