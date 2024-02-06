@@ -10,14 +10,14 @@ use wasmparser::{BinaryReader, FromReader, SectionLimited};
 #[derive(Debug, Clone)]
 pub struct RelocSection<'a> {
     pub target_section: u32,
-    pub reader: SectionLimited<'a, RelocEntry>,
+    pub entries: SectionLimited<'a, RelocEntry>,
 }
 
 impl<'a> FromReader<'a> for RelocSection<'a> {
     fn from_reader(reader: &mut BinaryReader<'a>) -> wasmparser::Result<Self> {
         Ok(Self {
             target_section: reader.read_var_u32()?,
-            reader: {
+            entries: {
                 let start = reader.original_position();
                 SectionLimited::new(reader.read_bytes(reader.bytes_remaining())?, start)?
             },
