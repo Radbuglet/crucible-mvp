@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.79"
+leb128 = "0.2.5"
+rustc-hash = "1.1.0"
+wasm-encoder = "0.41.0"
+wasmparser = "0.121.0"
