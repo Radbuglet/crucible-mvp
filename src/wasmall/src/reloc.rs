@@ -1,4 +1,7 @@
+use anyhow::Context;
 use wasmparser::{BinaryReader, FromReader, SectionLimited};
+
+use crate::util::SliceExt;
 
 // === Parsing === //
 
@@ -167,8 +170,63 @@ pub enum ScalarRewriteKind {
 }
 
 impl ScalarRewriteKind {
-    pub fn read(self, _buf: &[u8]) -> anyhow::Result<ScalarRewrite> {
-        todo!();
+    pub fn read(self, buf: &[u8]) -> anyhow::Result<ScalarRewrite> {
+        match self {
+            Self::VarU32 => Self::read_var_u32(buf).map(ScalarRewrite::VarU32),
+            Self::VarI32 => Self::read_var_i32(buf).map(ScalarRewrite::VarI32),
+            Self::VarU64 => Self::read_var_u64(buf).map(ScalarRewrite::VarU64),
+            Self::VarI64 => Self::read_var_i64(buf).map(ScalarRewrite::VarI64),
+            Self::U32 => Self::read_u32(buf).map(ScalarRewrite::U32),
+            Self::I32 => Self::read_i32(buf).map(ScalarRewrite::I32),
+            Self::U64 => Self::read_u64(buf).map(ScalarRewrite::U64),
+            Self::I64 => Self::read_i64(buf).map(ScalarRewrite::I64),
+        }
+    }
+
+    pub fn read_var_u32(buf: &[u8]) -> anyhow::Result<u32> {
+        leb128::read::unsigned(&mut buf.limit_len(5))
+            .ok()
+            .map(|v| v as u32)
+            .context("failed to var u32")
+    }
+
+    pub fn read_var_i32(buf: &[u8]) -> anyhow::Result<i32> {
+        leb128::read::signed(&mut buf.limit_len(5))
+            .ok()
+            .map(|v| v as i32)
+            .context("failed to var i32")
+    }
+
+    pub fn read_var_u64(buf: &[u8]) -> anyhow::Result<u64> {
+        leb128::read::unsigned(&mut buf.limit_len(10))
+            .ok()
+            .context("failed to var u64")
+    }
+
+    pub fn read_var_i64(buf: &[u8]) -> anyhow::Result<i64> {
+        leb128::read::signed(&mut buf.limit_len(10))
+            .ok()
+            .context("failed to var i64")
+    }
+
+    pub fn read_u32(buf: &[u8]) -> anyhow::Result<u32> {
+        anyhow::ensure!(buf.len() >= 4);
+        Ok(u32::from_le_bytes(buf.to_array::<4>()))
+    }
+
+    pub fn read_i32(buf: &[u8]) -> anyhow::Result<i32> {
+        anyhow::ensure!(buf.len() >= 4);
+        Ok(i32::from_le_bytes(buf.to_array::<4>()))
+    }
+
+    pub fn read_u64(buf: &[u8]) -> anyhow::Result<u64> {
+        anyhow::ensure!(buf.len() >= 8);
+        Ok(u64::from_le_bytes(buf.to_array::<8>()))
+    }
+
+    pub fn read_i64(buf: &[u8]) -> anyhow::Result<i64> {
+        anyhow::ensure!(buf.len() >= 8);
+        Ok(i64::from_le_bytes(buf.to_array::<8>()))
     }
 
     pub fn as_zeroed(self) -> ScalarRewrite {
@@ -198,6 +256,21 @@ pub enum ScalarRewrite {
 }
 
 impl ScalarRewrite {
+    pub fn as_u64(self) -> u64 {
+        use ScalarRewrite::*;
+
+        match self {
+            VarU32(v) => v as u64,
+            VarI32(v) => v as u64,
+            VarU64(v) => v,
+            VarI64(v) => v as u64,
+            U32(v) => v as u64,
+            I32(v) => v as u64,
+            U64(v) => v,
+            I64(v) => v as u64,
+        }
+    }
+
     pub fn kind(self) -> ScalarRewriteKind {
         match self {
             ScalarRewrite::VarU32(_) => ScalarRewriteKind::VarU32,

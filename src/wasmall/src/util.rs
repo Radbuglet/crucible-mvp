@@ -44,3 +44,18 @@ pub trait VecExt<T>: ExtensionFor<Vec<T>> {
 }
 
 impl<T> VecExt<T> for Vec<T> {}
+
+pub trait SliceExt<T>: ExtensionFor<[T]> {
+    fn limit_len(&self, len: usize) -> &[T] {
+        &self.v()[..self.v().len().min(len)]
+    }
+
+	fn to_array<const N: usize>(&self) -> [T; N]
+	where
+		T: Copy,
+	{
+		std::array::from_fn(|i| self.v()[i])
+	}
+}
+
+impl<T> SliceExt<T> for [T] {}
