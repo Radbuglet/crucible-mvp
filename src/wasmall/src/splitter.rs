@@ -33,6 +33,9 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<()> {
     // Maps data segments to ranges associated with symbols.
     let mut data_seg_map = FxHashMap::<u32, Vec<(u32, Range<u32>)>>::default();
 
+    // Debug-only information about symbols.
+    let mut dbg_symbols = Vec::new();
+
     {
         let mut section_index = Wrapping(usize::MAX);
 
@@ -54,6 +57,8 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<()> {
 
                         for (sym_idx, info) in stab.into_iter().enumerate() {
                             let info = info?;
+
+                            dbg_symbols.push(info);
 
                             match info {
                                 SymbolInfo::Func { index: fn_idx, .. } => {
@@ -110,9 +115,16 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<()> {
     let mut blob_buf = Vec::new();
 
     // Maps symbol indices to their corresponding blob.
-    let mut symbol_blobs = FxHashMap::<u32, (Range<usize>, Hash)>::default();
+    let mut symbol_blobs = FxHashMap::<u32, Blob>::default();
 
-    // Maps symbol indices to their values.
+    #[derive(Debug)]
+    struct Blob {
+        buf_range: Range<usize>,
+        reloc_range: (usize, Range<usize>),
+        hash: Hash,
+    }
+
+    // Maps symbol indices to their common values.
     let mut sym_values = FxHashMap::<u32, Option<u64>>::default();
 
     {
@@ -126,7 +138,8 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<()> {
                     let section_start = range.start;
 
                     // Determine the set of relocations affecting this section
-                    let mut relocations = orig_reloc_map[section_idx].iter().peekable();
+                    let relocations = &orig_reloc_map[section_idx];
+                    let mut relocations_idx = 0;
 
                     // For each function...
                     while let Some(Payload::CodeSectionEntry(func)) = parser.peek() {
@@ -139,10 +152,10 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<()> {
 
                         // Skip to the first relocation affecting this entry
                         while relocations
-                            .peek()
+                            .get(relocations_idx)
                             .is_some_and(|reloc| reloc.offset < entry_start)
                         {
-                            relocations.next();
+                            relocations_idx += 1;
                         }
 
                         // Rewrite the function with erased relocations
@@ -150,7 +163,7 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<()> {
                         rewrite_relocated(
                             entry_data,
                             &mut blob_buf,
-                            relocations.clone().map(|reloc| {
+                            relocations[relocations_idx..].iter().map(|reloc| {
                                 (
                                     (reloc.offset - entry_start) as usize,
                                     reloc.ty.unwrap().rewrite_kind().as_zeroed(),
@@ -162,10 +175,12 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<()> {
 
                         // Check whether there exists a value mapped to all relocations for a specific
                         // symbol index.
-                        for reloc in relocations.clone() {
-                            if reloc.offset >= entry_end {
-                                break;
-                            }
+                        let reloc_start = relocations_idx;
+                        while let Some(reloc) = relocations
+                            .get(relocations_idx)
+                            .filter(|reloc| reloc.offset < entry_end)
+                        {
+                            relocations_idx += 1;
 
                             let reloc_value = reloc
                                 .ty
@@ -176,26 +191,30 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<()> {
                                 .read(&entry_data[((reloc.offset - entry_start) as usize)..])
                                 .unwrap();
 
-                            let reloc_value = reloc_value.as_u64();
+                            let reloc_value = reloc_value
+                                .as_u64()
+                                .wrapping_add_signed(-(reloc.addend.unwrap_or(0) as i64));
 
                             match sym_values.entry(reloc.index) {
                                 hash_map::Entry::Occupied(entry) => {
                                     let entry = entry.into_mut();
                                     if let Some(inner) = *entry {
                                         if inner != reloc_value {
-                                            println!(
-                                                "Multiple different values assigned to symbol {}: {} (ty {:?})",
-                                                reloc.index, inner, reloc.ty.unwrap(),
-                                            );
+                                            log::trace!(
+												"Multiple different values assigned to symbol {}@{:?}: {} (reloc ty {:?}, addend: {:?})",
+												reloc.index, dbg_symbols[reloc.index as usize],
+												inner, reloc.ty.unwrap(), reloc.addend,
+											);
                                             *entry = None;
                                         }
                                     }
 
                                     if entry.is_none() {
-                                        println!(
-                                            "Multiple different values assigned to symbol {}: {} (ty {:?})",
-                                            reloc.index, reloc_value, reloc.ty.unwrap(),
-                                        );
+                                        log::trace!(
+											"Multiple different values assigned to symbol {}@{:?}: {} (reloc ty {:?}, addend: {:?})",
+											reloc.index, dbg_symbols[reloc.index as usize],
+											reloc_value, reloc.ty.unwrap(), reloc.addend,
+										);
                                     }
                                 }
                                 hash_map::Entry::Vacant(entry) => {
@@ -203,9 +222,17 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<()> {
                                 }
                             }
                         }
+                        let reloc_range = reloc_start..relocations_idx;
 
                         // Hash that blob
-                        symbol_blobs.insert(func_idx, (blob_range, hash(blob)));
+                        symbol_blobs.insert(
+                            func_idx,
+                            Blob {
+                                buf_range: blob_range,
+                                reloc_range: (section_idx, reloc_range),
+                                hash: hash(blob),
+                            },
+                        );
 
                         func_idx += 1;
                     }
@@ -223,7 +250,11 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<()> {
         }
     }
 
-    // dbg!(&symbol_blobs);
+    log::trace!(
+        "Unifiable symbols: {}/{}",
+        sym_values.iter().filter(|v| v.1.is_some()).count(),
+        sym_values.len(),
+    );
 
     Ok(())
 }
