@@ -27,15 +27,21 @@ impl Default for WasmallWriter {
 
 impl WasmallWriter {
     pub fn new() -> Self {
-        todo!();
+        Self {
+            archive: WasmallArchive {
+                out_buf: Vec::new(),
+                blob_buf: Vec::new(),
+                hashes: FxHashMap::default(),
+            },
+        }
     }
 
-    pub fn push_verbatim(&mut self, data: &[u8]) {
-        todo!();
+    pub fn push_verbatim<R>(&mut self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+        f(&mut self.archive.out_buf)
     }
 
     pub fn push_blob(&mut self) -> SingleBlobWriter<'_> {
-        todo!();
+        SingleBlobWriter { writer: self }
     }
 
     pub fn finish(self) -> WasmallArchive {
@@ -48,15 +54,11 @@ pub struct SingleBlobWriter<'a> {
 }
 
 impl SingleBlobWriter<'_> {
-    pub fn push_reloc(&mut self, entry: RelocEntry, value_taken: u64) {
-        todo!();
+    pub fn push_reloc(&mut self, entry: RelocEntry, value_taken: u32) {
+        // nop
     }
 
-    pub fn finish(
-        &mut self,
-        write_normalized: impl FnOnce(&mut Vec<u8>) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
-        todo!();
-        Ok(())
+    pub fn finish<R>(&mut self, write_normalized: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+        write_normalized(&mut self.writer.archive.out_buf)
     }
 }

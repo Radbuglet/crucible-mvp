@@ -1,3 +1,5 @@
+//! Utilities for parsing, writing, interpreting, and applying relocations.
+
 use anyhow::Context;
 use wasmparser::{BinaryReader, FromReader, SectionLimited};
 
@@ -161,26 +163,17 @@ pub fn rewrite_relocated(
 pub enum ScalarRewriteKind {
     VarU32,
     VarI32,
-    VarU64,
-    VarI64,
     U32,
     I32,
-    U64,
-    I64,
 }
 
 impl ScalarRewriteKind {
-    // TODO: This should add support for offsets.
     pub fn read(self, buf: &[u8]) -> anyhow::Result<ScalarRewrite> {
         match self {
             Self::VarU32 => Self::read_var_u32(buf).map(ScalarRewrite::VarU32),
             Self::VarI32 => Self::read_var_i32(buf).map(ScalarRewrite::VarI32),
-            Self::VarU64 => Self::read_var_u64(buf).map(ScalarRewrite::VarU64),
-            Self::VarI64 => Self::read_var_i64(buf).map(ScalarRewrite::VarI64),
             Self::U32 => Self::read_u32(buf).map(ScalarRewrite::U32),
             Self::I32 => Self::read_i32(buf).map(ScalarRewrite::I32),
-            Self::U64 => Self::read_u64(buf).map(ScalarRewrite::U64),
-            Self::I64 => Self::read_i64(buf).map(ScalarRewrite::I64),
         }
     }
 
@@ -198,18 +191,6 @@ impl ScalarRewriteKind {
             .context("failed to var i32")
     }
 
-    pub fn read_var_u64(buf: &[u8]) -> anyhow::Result<u64> {
-        leb128::read::unsigned(&mut buf.limit_len(10))
-            .ok()
-            .context("failed to var u64")
-    }
-
-    pub fn read_var_i64(buf: &[u8]) -> anyhow::Result<i64> {
-        leb128::read::signed(&mut buf.limit_len(10))
-            .ok()
-            .context("failed to var i64")
-    }
-
     pub fn read_u32(buf: &[u8]) -> anyhow::Result<u32> {
         anyhow::ensure!(buf.len() >= 4);
         Ok(u32::from_le_bytes(buf.to_array::<4>()))
@@ -220,26 +201,12 @@ impl ScalarRewriteKind {
         Ok(i32::from_le_bytes(buf.to_array::<4>()))
     }
 
-    pub fn read_u64(buf: &[u8]) -> anyhow::Result<u64> {
-        anyhow::ensure!(buf.len() >= 8);
-        Ok(u64::from_le_bytes(buf.to_array::<8>()))
-    }
-
-    pub fn read_i64(buf: &[u8]) -> anyhow::Result<i64> {
-        anyhow::ensure!(buf.len() >= 8);
-        Ok(i64::from_le_bytes(buf.to_array::<8>()))
-    }
-
     pub fn as_zeroed(self) -> ScalarRewrite {
         match self {
             ScalarRewriteKind::VarU32 => ScalarRewrite::VarU32(0),
             ScalarRewriteKind::VarI32 => ScalarRewrite::VarI32(0),
-            ScalarRewriteKind::VarU64 => ScalarRewrite::VarU64(0),
-            ScalarRewriteKind::VarI64 => ScalarRewrite::VarI64(0),
             ScalarRewriteKind::U32 => ScalarRewrite::U32(0),
             ScalarRewriteKind::I32 => ScalarRewrite::I32(0),
-            ScalarRewriteKind::U64 => ScalarRewrite::U64(0),
-            ScalarRewriteKind::I64 => ScalarRewrite::I64(0),
         }
     }
 }
@@ -248,41 +215,32 @@ impl ScalarRewriteKind {
 pub enum ScalarRewrite {
     VarU32(u32),
     VarI32(i32),
-    VarU64(u64),
-    VarI64(i64),
     U32(u32),
     I32(i32),
-    U64(u64),
-    I64(i64),
 }
 
 impl ScalarRewrite {
-    // TODO: This doesn't work well with signs, I think?
-    pub fn as_u64(self) -> u64 {
+    pub fn as_u32(self) -> u32 {
         use ScalarRewrite::*;
 
         match self {
-            VarU32(v) => v as u64,
-            VarI32(v) => v as u64,
-            VarU64(v) => v,
-            VarI64(v) => v as u64,
-            U32(v) => v as u64,
-            I32(v) => v as u64,
-            U64(v) => v,
-            I64(v) => v as u64,
+            VarU32(v) => v,
+            VarI32(v) => v as u32,
+            U32(v) => v,
+            I32(v) => v as u32,
         }
+    }
+
+    pub fn as_u32_offset(self, addend: i32) -> u32 {
+        self.as_u32().wrapping_add_signed(addend.wrapping_neg())
     }
 
     pub fn kind(self) -> ScalarRewriteKind {
         match self {
             ScalarRewrite::VarU32(_) => ScalarRewriteKind::VarU32,
             ScalarRewrite::VarI32(_) => ScalarRewriteKind::VarI32,
-            ScalarRewrite::VarU64(_) => ScalarRewriteKind::VarU64,
-            ScalarRewrite::VarI64(_) => ScalarRewriteKind::VarI64,
             ScalarRewrite::U32(_) => ScalarRewriteKind::U32,
             ScalarRewrite::I32(_) => ScalarRewriteKind::I32,
-            ScalarRewrite::U64(_) => ScalarRewriteKind::U64,
-            ScalarRewrite::I64(_) => ScalarRewriteKind::I64,
         }
     }
 
@@ -357,12 +315,8 @@ impl ScalarRewrite {
         match self {
             VarU32(val) => Self::rewrite_var_u32(buf, writer, val),
             VarI32(val) => Self::rewrite_var_i32(buf, writer, val),
-            VarU64(val) => Self::rewrite_var_u64(buf, writer, val),
-            VarI64(val) => Self::rewrite_var_i64(buf, writer, val),
             U32(val) => Self::rewrite_u32(buf, writer, val),
             I32(val) => Self::rewrite_i32(buf, writer, val),
-            U64(val) => Self::rewrite_u64(buf, writer, val),
-            I64(val) => Self::rewrite_i64(buf, writer, val),
         }
     }
 }

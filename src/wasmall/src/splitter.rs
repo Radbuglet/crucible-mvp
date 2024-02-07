@@ -105,11 +105,27 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
 
         while let Some(payload) = parser.next() {
             match payload {
-                Payload::CodeSectionStart { range, .. } => {
+                Payload::CodeSectionStart { range, count, .. } => {
                     let section_start = range.start;
 
                     // Write section header verbatim
-                    // TODO
+                    writer.push_verbatim(|sink| {
+                        // Write section ID
+                        sink.push(wasm_encoder::SectionId::Code as u8);
+
+                        // Write section length
+                        fn encoding_size(n: u32) -> usize {
+                            let mut buf = [0u8; 5];
+                            leb128::write::unsigned(&mut &mut buf[..], n.into()).unwrap()
+                        }
+
+                        wasm_encoder::Encode::encode(&(encoding_size(*count) + range.len()), sink);
+
+                        // Write function count
+                        wasm_encoder::Encode::encode(&count, sink);
+
+                        // The bytes are just encoded as blobs.
+                    });
 
                     // Determine the set of relocations affecting this section
                     let relocations = &orig_reloc_map[section_idx];
@@ -121,7 +137,7 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
 
                         let mut blob = writer.push_blob();
 
-                        // Determine the range of this code entry relative to the section
+                        // Determine the range of this code entry relative to the section start
                         let entry_start = (func.range().start - section_start) as u32;
                         let entry_end = (func.range().end - section_start) as u32;
                         let entry_data = &src[func.range()];
@@ -147,56 +163,58 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                             &relocations[start..relocations_idx]
                         };
 
-                        // Push the blob's relocations
-                        let mut global_to_local_sym_and_value_map =
-                            <FxHashMap<u32, (u32, u64)>>::default();
+                        // Transform the blob's globally-indexed relocations into locally-indexed
+                        // relocations for the `WasmallWriter`.
+                        {
+                            let mut global_to_local_sym_and_value_map =
+                                <FxHashMap<u32, (u32, u32)>>::default();
 
-                        let mut local_sym_gen = 0;
+                            let mut local_sym_gen = 0;
 
-                        for reloc in relocations {
-                            // Determine the value this relocation takes on.
-                            let reloc_ty = reloc.ty.unwrap();
-                            let reloc_value = reloc_ty
-                                .rewrite_kind()
-                                .read(&entry_data[(reloc.offset - entry_start) as usize..])?
-                                .as_u64()
-                                .wrapping_add_signed(-(reloc.addend.unwrap_or(0) as i64));
+                            for reloc in relocations {
+                                // Determine the value this relocation takes on.
+                                let reloc_ty = reloc.ty.unwrap();
+                                let reloc_value = reloc_ty
+                                    .rewrite_kind()
+                                    .read(&entry_data[(reloc.offset - entry_start) as usize..])?
+                                    .as_u32_offset(reloc.addend.unwrap_or(0));
 
-                            // Determine whether we can use the old local symbol, generating a new
-                            // local symbol if not.
-                            let local_sym =
-                                match global_to_local_sym_and_value_map.entry(reloc.index) {
-                                    hash_map::Entry::Occupied(entry) => {
-                                        let entry = entry.into_mut();
+                                // Determine whether we can use the old local symbol, generating a new
+                                // local symbol if not.
+                                let local_sym =
+                                    match global_to_local_sym_and_value_map.entry(reloc.index) {
+                                        hash_map::Entry::Occupied(entry) => {
+                                            let entry = entry.into_mut();
 
-                                        if reloc_value != entry.1 {
-                                            *entry = (local_sym_gen, reloc_value);
-                                            local_sym_gen += 1;
+                                            if reloc_value != entry.1 {
+                                                *entry = (local_sym_gen, reloc_value);
+                                                local_sym_gen += 1;
+                                            }
+
+                                            entry.0
                                         }
+                                        hash_map::Entry::Vacant(entry) => {
+                                            let local_sym = local_sym_gen;
+                                            local_sym_gen += 1;
+                                            entry.insert((local_sym, reloc_value));
+                                            local_sym
+                                        }
+                                    };
 
-                                        entry.0
-                                    }
-                                    hash_map::Entry::Vacant(entry) => {
-                                        let local_sym = local_sym_gen;
-                                        local_sym_gen += 1;
-                                        entry.insert((local_sym, reloc_value));
-                                        local_sym
-                                    }
-                                };
-
-                            blob.push_reloc(
-                                RelocEntry {
-                                    offset: reloc.offset - entry_start,
-                                    index: local_sym,
-                                    ..*reloc
-                                },
-                                reloc_value,
-                            );
-                            relocations_idx += 1;
+                                blob.push_reloc(
+                                    RelocEntry {
+                                        offset: reloc.offset - entry_start,
+                                        index: local_sym,
+                                        ..*reloc
+                                    },
+                                    reloc_value,
+                                );
+                            }
                         }
 
                         // Complete the blob
                         blob.finish(|buf| {
+                            // This should not fail because we already validated all of these.
                             rewrite_relocated(
                                 entry_data,
                                 buf,
@@ -207,16 +225,28 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                                     )
                                 }),
                             )
-                        })?;
+                            .unwrap();
+                        });
                     }
                 }
-                Payload::DataCountSection { count, range } => {
-                    // TODO
-                }
-
+                // TODO: Handle data segments as well
                 payload => {
-                    if let Some((section_id, section_range)) = payload.as_section() {
-                        // TODO: Write section verbatim with filtering
+                    if let Some((section_id, section_range)) = payload
+                        .as_section()
+                        // Don't include custom sections since our runtime isn't going to use them
+                        // whatsoever.
+                        .filter(
+                            // TODO: Actually filter them out once testing is done.
+                            |_| true, /* !matches!(payload, Payload::CustomSection(_)) */
+                        )
+                    {
+                        writer.push_verbatim(|sink| {
+                            // Encode section ID
+                            sink.push(section_id);
+
+                            // Encode section byte vector
+                            wasm_encoder::Encode::encode(&src[section_range], sink);
+                        });
                     }
                 }
             }
