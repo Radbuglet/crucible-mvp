@@ -1,5 +1,6 @@
 use std::{collections::hash_map, num::Wrapping, ops::Range};
 
+use anyhow::Context;
 use rustc_hash::FxHashMap;
 use wasmparser::{
     BinaryReader, DefinedDataSymbol, FromReader, Linking, LinkingSectionReader, Parser, Payload,
@@ -100,6 +101,18 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
     // Run a second pass to create both the blobs and the split module.
     let mut writer = WasmallWriter::default();
     {
+        // Write the magic number
+        writer.push_verbatim(|sink| {
+            #[rustfmt::skip]
+            sink.extend_from_slice(&[
+                // Magic
+                0x00, 0x61, 0x73, 0x6D,
+				// Version
+                0x01, 0x00, 0x00, 0x00,
+            ]);
+        });
+
+        // Write the file's sections
         let mut parser = payloads.iter().peekable();
         let mut section_idx = 0;
 
@@ -109,23 +122,23 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                     let section_start = range.start;
 
                     // Write section header verbatim
-                    writer.push_verbatim(|sink| {
+                    writer.push_verbatim::<anyhow::Result<_>>(|sink| {
                         // Write section ID
-                        sink.push(wasm_encoder::SectionId::Code as u8);
+                        sink.push(10);
 
-                        // Write section length
-                        fn encoding_size(n: u32) -> usize {
-                            let mut buf = [0u8; 5];
-                            leb128::write::unsigned(&mut &mut buf[..], n.into()).unwrap()
-                        }
+                        // Write section length. Note that the `range` already contains the `count`
+                        // field.
+                        leb128::write::unsigned(
+                            sink,
+                            u32::try_from(range.len()).context("code section is too big")? as u64,
+                        )
+                        .unwrap();
 
-                        wasm_encoder::Encode::encode(&(encoding_size(*count) + range.len()), sink);
+                        // Write the count field
+                        leb128::write::unsigned(sink, *count as u64).unwrap();
 
-                        // Write function count
-                        wasm_encoder::Encode::encode(&count, sink);
-
-                        // The bytes are just encoded as blobs.
-                    });
+                        Ok(())
+                    })?;
 
                     // Determine the set of relocations affecting this section
                     let relocations = &orig_reloc_map[section_idx];
@@ -137,10 +150,21 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
 
                         let mut blob = writer.push_blob();
 
+                        // Unfortunately, wasmparser hates us and omits the size field (encoded as a
+                        // `var_u32`) preceding this code entry. Luckily, we can re-derive it.
+                        let func_range = func.range();
+                        let size_field_byte_count = {
+                            let mut buf = [0u8; 5];
+                            leb128::write::unsigned(&mut &mut buf[..], func_range.len() as u64)
+                                .unwrap()
+                        };
+
+                        let func_range = (func_range.start - size_field_byte_count)..func_range.end;
+
                         // Determine the range of this code entry relative to the section start
-                        let entry_start = (func.range().start - section_start) as u32;
-                        let entry_end = (func.range().end - section_start) as u32;
-                        let entry_data = &src[func.range()];
+                        let entry_start = (func_range.start - section_start) as u32;
+                        let entry_end = (func_range.end - section_start) as u32;
+                        let entry_data = &src[func_range];
 
                         // Collect the set of relocations affecting this function
                         let relocations = {
@@ -215,17 +239,19 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                         // Complete the blob
                         blob.finish(|buf| {
                             // This should not fail because we already validated all of these.
-                            rewrite_relocated(
-                                entry_data,
-                                buf,
-                                relocations.iter().map(|reloc| {
-                                    (
-                                        (reloc.offset - entry_start) as usize,
-                                        reloc.ty.unwrap().rewrite_kind().as_zeroed(),
-                                    )
-                                }),
-                            )
-                            .unwrap();
+                            // TODO
+                            // rewrite_relocated(
+                            //     entry_data,
+                            //     buf,
+                            //     relocations.iter().map(|reloc| {
+                            //         (
+                            //             (reloc.offset - entry_start) as usize,
+                            //             reloc.ty.unwrap().rewrite_kind().as_zeroed(),
+                            //         )
+                            //     }),
+                            // )
+                            // .unwrap();
+                            buf.extend_from_slice(entry_data);
                         });
                     }
                 }
@@ -240,13 +266,23 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                             |_| true, /* !matches!(payload, Payload::CustomSection(_)) */
                         )
                     {
-                        writer.push_verbatim(|sink| {
-                            // Encode section ID
+                        writer.push_verbatim::<anyhow::Result<_>>(|sink| {
+                            // Write section ID
                             sink.push(section_id);
 
-                            // Encode section byte vector
-                            wasm_encoder::Encode::encode(&src[section_range], sink);
-                        });
+                            // Write section length
+                            leb128::write::unsigned(
+                                sink,
+                                u32::try_from(section_range.len()).context("section is too big")?
+                                    as u64,
+                            )
+                            .unwrap();
+
+                            // Write section data
+                            sink.extend_from_slice(&src[section_range]);
+
+                            Ok(())
+                        })?;
                     }
                 }
             }

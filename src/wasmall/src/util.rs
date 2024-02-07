@@ -50,12 +50,12 @@ pub trait SliceExt<T>: ExtensionFor<[T]> {
         &self.v()[..self.v().len().min(len)]
     }
 
-	fn to_array<const N: usize>(&self) -> [T; N]
-	where
-		T: Copy,
-	{
-		std::array::from_fn(|i| self.v()[i])
-	}
+    fn to_array<const N: usize>(&self) -> [T; N]
+    where
+        T: Copy,
+    {
+        std::array::from_fn(|i| self.v()[i])
+    }
 }
 
 impl<T> SliceExt<T> for [T] {}

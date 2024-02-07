@@ -181,14 +181,14 @@ impl ScalarRewriteKind {
         leb128::read::unsigned(&mut buf.limit_len(5))
             .ok()
             .map(|v| v as u32)
-            .context("failed to var u32")
+            .context("failed to read var u32")
     }
 
     pub fn read_var_i32(buf: &[u8]) -> anyhow::Result<i32> {
         leb128::read::signed(&mut buf.limit_len(5))
             .ok()
             .map(|v| v as i32)
-            .context("failed to var i32")
+            .context("failed to read var i32")
     }
 
     pub fn read_u32(buf: &[u8]) -> anyhow::Result<u32> {
