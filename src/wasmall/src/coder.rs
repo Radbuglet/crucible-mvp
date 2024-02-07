@@ -1,29 +1,62 @@
+use std::ops::Range;
+
 use blake3::Hash;
 use rustc_hash::FxHashMap;
 
-use crate::reloc::ScalarRewrite;
+use crate::reloc::RelocEntry;
 
 // === Writer === //
 
-#[derive(Debug, Default)]
-pub struct SplitEntryWriter {
-    used_hashes: FxHashMap<Hash, u32>,
-    buf: Vec<u8>,
+#[derive(Debug)]
+pub struct WasmallArchive {
+    pub out_buf: Vec<u8>,
+    pub blob_buf: Vec<u8>,
+    pub hashes: FxHashMap<Hash, Range<usize>>,
 }
 
-impl SplitEntryWriter {
-    /// Defines a relocation associated to a hash. If the hash was already used in this stream, it
-    /// will be replaced by the index of that hash.
-    pub fn push_reloc_def(&mut self, hash: Hash, value: ScalarRewrite, only_next_import: bool) {}
-
-    /// Imports a blob by a given hash and updates it with the specified relocation definitions. If
-    /// the hash was already used in this stream, it will be replaced by the index of that hash.
-    pub fn push_blob_import(&mut self, hash: Hash) {}
-
-    /// Pushes a verbatim section to stream.
-    pub fn push_verbatim(&mut self, data: &[u8]) {}
+#[derive(Debug)]
+pub struct WasmallWriter {
+    archive: WasmallArchive,
 }
 
-// === Reader === //
+impl Default for WasmallWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-// TODO
+impl WasmallWriter {
+    pub fn new() -> Self {
+        todo!();
+    }
+
+    pub fn push_verbatim(&mut self, data: &[u8]) {
+        todo!();
+    }
+
+    pub fn push_blob(&mut self) -> SingleBlobWriter<'_> {
+        todo!();
+    }
+
+    pub fn finish(self) -> WasmallArchive {
+        self.archive
+    }
+}
+
+pub struct SingleBlobWriter<'a> {
+    writer: &'a mut WasmallWriter,
+}
+
+impl SingleBlobWriter<'_> {
+    pub fn push_reloc(&mut self, entry: RelocEntry, value_taken: u64) {
+        todo!();
+    }
+
+    pub fn finish(
+        &mut self,
+        write_normalized: impl FnOnce(&mut Vec<u8>) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        todo!();
+        Ok(())
+    }
+}

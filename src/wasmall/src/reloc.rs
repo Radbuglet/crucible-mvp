@@ -170,6 +170,7 @@ pub enum ScalarRewriteKind {
 }
 
 impl ScalarRewriteKind {
+    // TODO: This should add support for offsets.
     pub fn read(self, buf: &[u8]) -> anyhow::Result<ScalarRewrite> {
         match self {
             Self::VarU32 => Self::read_var_u32(buf).map(ScalarRewrite::VarU32),
@@ -256,6 +257,7 @@ pub enum ScalarRewrite {
 }
 
 impl ScalarRewrite {
+    // TODO: This doesn't work well with signs, I think?
     pub fn as_u64(self) -> u64 {
         use ScalarRewrite::*;
 
