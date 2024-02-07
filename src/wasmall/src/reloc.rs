@@ -99,6 +99,25 @@ impl RelocEntryType {
             MemoryAddrLeb | MemoryAddrSleb | MemoryAddrI32 | FunctionOffsetI32 | SectionOffsetI32
         )
     }
+
+    pub fn rewrite_kind(self) -> ScalarRewriteKind {
+        use {RelocEntryType::*, ScalarRewriteKind::*};
+
+        match self {
+            FunctionIndexLeb => VarU32,
+            TableIndexSleb => VarI32,
+            TableIndexI32 => U32,
+            MemoryAddrLeb => VarU32,
+            MemoryAddrSleb => VarI32,
+            MemoryAddrI32 => U32,
+            TypeIndexLeb => VarU32,
+            GlobalIndexLeb => VarU32,
+            FunctionOffsetI32 => U32,
+            SectionOffsetI32 => U32,
+            EventIndexLeb => VarU32,
+            GlobalIndexI32 => U32,
+        }
+    }
 }
 
 // === Rewriting === //
@@ -106,7 +125,7 @@ impl RelocEntryType {
 pub fn rewrite_relocated(
     buf: &[u8],
     writer: &mut Vec<u8>,
-    replacements: impl IntoIterator<Item = (usize, impl RelocRewriter)>,
+    replacements: impl IntoIterator<Item = (usize, ScalarRewrite)>,
 ) -> anyhow::Result<()> {
     // Invariant: `buf_cursor` is always less than or equal to the `buf` length.
     let mut buf_cursor = 0;
@@ -135,16 +154,34 @@ pub fn rewrite_relocated(
     Ok(())
 }
 
-pub trait RelocRewriter {
-    fn rewrite(&self, buf: &[u8], writer: &mut Vec<u8>) -> anyhow::Result<usize>;
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ScalarRewriteKind {
+    VarU32,
+    VarI32,
+    VarU64,
+    VarI64,
+    U32,
+    I32,
+    U64,
+    I64,
 }
 
-impl<F> RelocRewriter for F
-where
-    F: Fn(&[u8], &mut Vec<u8>) -> anyhow::Result<usize>,
-{
-    fn rewrite(&self, buf: &[u8], writer: &mut Vec<u8>) -> anyhow::Result<usize> {
-        self(buf, writer)
+impl ScalarRewriteKind {
+    pub fn read(self, _buf: &[u8]) -> anyhow::Result<ScalarRewrite> {
+        todo!();
+    }
+
+    pub fn as_zeroed(self) -> ScalarRewrite {
+        match self {
+            ScalarRewriteKind::VarU32 => ScalarRewrite::VarU32(0),
+            ScalarRewriteKind::VarI32 => ScalarRewrite::VarI32(0),
+            ScalarRewriteKind::VarU64 => ScalarRewrite::VarU64(0),
+            ScalarRewriteKind::VarI64 => ScalarRewrite::VarI64(0),
+            ScalarRewriteKind::U32 => ScalarRewrite::U32(0),
+            ScalarRewriteKind::I32 => ScalarRewrite::I32(0),
+            ScalarRewriteKind::U64 => ScalarRewrite::U64(0),
+            ScalarRewriteKind::I64 => ScalarRewrite::I64(0),
+        }
     }
 }
 
@@ -161,6 +198,19 @@ pub enum ScalarRewrite {
 }
 
 impl ScalarRewrite {
+    pub fn kind(self) -> ScalarRewriteKind {
+        match self {
+            ScalarRewrite::VarU32(_) => ScalarRewriteKind::VarU32,
+            ScalarRewrite::VarI32(_) => ScalarRewriteKind::VarI32,
+            ScalarRewrite::VarU64(_) => ScalarRewriteKind::VarU64,
+            ScalarRewrite::VarI64(_) => ScalarRewriteKind::VarI64,
+            ScalarRewrite::U32(_) => ScalarRewriteKind::U32,
+            ScalarRewrite::I32(_) => ScalarRewriteKind::I32,
+            ScalarRewrite::U64(_) => ScalarRewriteKind::U64,
+            ScalarRewrite::I64(_) => ScalarRewriteKind::I64,
+        }
+    }
+
     fn take_len_var(max_bytes: usize, buf: &[u8]) -> anyhow::Result<usize> {
         let mut i = 0;
         while i < max_bytes {
@@ -225,13 +275,11 @@ impl ScalarRewrite {
         writer.extend_from_slice(&val.to_le_bytes());
         Ok(8)
     }
-}
 
-impl RelocRewriter for ScalarRewrite {
-    fn rewrite(&self, buf: &[u8], writer: &mut Vec<u8>) -> anyhow::Result<usize> {
+    pub fn rewrite(self, buf: &[u8], writer: &mut Vec<u8>) -> anyhow::Result<usize> {
         use ScalarRewrite::*;
 
-        match *self {
+        match self {
             VarU32(val) => Self::rewrite_var_u32(buf, writer, val),
             VarI32(val) => Self::rewrite_var_i32(buf, writer, val),
             VarU64(val) => Self::rewrite_var_u64(buf, writer, val),
