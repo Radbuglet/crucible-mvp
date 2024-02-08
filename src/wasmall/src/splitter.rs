@@ -10,7 +10,7 @@ use wasmparser::{
 use crate::{
     coder::{WasmallArchive, WasmallWriter},
     reloc::{rewrite_relocated, RelocEntry, RelocSection},
-    util::VecExt,
+    util::{len_of, Leb128WriteExt, VecExt},
 };
 
 pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
@@ -128,14 +128,12 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
 
                         // Write section length. Note that the `range` already contains the `count`
                         // field.
-                        leb128::write::unsigned(
-                            sink,
-                            u32::try_from(range.len()).context("code section is too big")? as u64,
-                        )
-                        .unwrap();
+                        sink.write_var_u32(
+                            u32::try_from(range.len()).context("code section is too big")?,
+                        );
 
                         // Write the count field
-                        leb128::write::unsigned(sink, *count as u64).unwrap();
+                        sink.write_var_u32(*count);
 
                         Ok(())
                     })?;
@@ -150,14 +148,10 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
 
                         let mut blob = writer.push_blob();
 
-                        // Unfortunately, wasmparser hates us and omits the size field (encoded as a
-                        // `var_u32`) preceding this code entry. Luckily, we can re-derive it.
+                        // Extend the range byte view to include the size field in the function
                         let func_range = func.range();
-                        let size_field_byte_count = {
-                            let mut buf = [0u8; 5];
-                            leb128::write::unsigned(&mut &mut buf[..], func_range.len() as u64)
-                                .unwrap()
-                        };
+                        let size_field_byte_count =
+                            len_of(|w| w.write_var_u32(func_range.len() as u32));
 
                         let func_range = (func_range.start - size_field_byte_count)..func_range.end;
 
@@ -271,12 +265,9 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                             sink.push(section_id);
 
                             // Write section length
-                            leb128::write::unsigned(
-                                sink,
-                                u32::try_from(section_range.len()).context("section is too big")?
-                                    as u64,
-                            )
-                            .unwrap();
+                            sink.write_var_u32(
+                                u32::try_from(section_range.len()).context("section is too big")?,
+                            );
 
                             // Write section data
                             sink.extend_from_slice(&src[section_range]);

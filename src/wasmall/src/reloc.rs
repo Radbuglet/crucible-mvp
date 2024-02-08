@@ -1,9 +1,8 @@
 //! Utilities for parsing, writing, interpreting, and applying relocations.
 
-use anyhow::Context;
 use wasmparser::{BinaryReader, FromReader, SectionLimited};
 
-use crate::util::SliceExt;
+use crate::util::{Leb128ReadExt, Leb128WriteExt};
 
 // === Parsing === //
 
@@ -170,35 +169,11 @@ pub enum ScalarRewriteKind {
 impl ScalarRewriteKind {
     pub fn read(self, buf: &[u8]) -> anyhow::Result<ScalarRewrite> {
         match self {
-            Self::VarU32 => Self::read_var_u32(buf).map(ScalarRewrite::VarU32),
-            Self::VarI32 => Self::read_var_i32(buf).map(ScalarRewrite::VarI32),
-            Self::U32 => Self::read_u32(buf).map(ScalarRewrite::U32),
-            Self::I32 => Self::read_i32(buf).map(ScalarRewrite::I32),
+            Self::VarU32 => buf.read_var_u32().map(ScalarRewrite::VarU32),
+            Self::VarI32 => buf.read_var_i32().map(ScalarRewrite::VarI32),
+            Self::U32 => buf.read_u32().map(ScalarRewrite::U32),
+            Self::I32 => buf.read_i32().map(ScalarRewrite::I32),
         }
-    }
-
-    pub fn read_var_u32(buf: &[u8]) -> anyhow::Result<u32> {
-        leb128::read::unsigned(&mut buf.limit_len(5))
-            .ok()
-            .map(|v| v as u32)
-            .context("failed to read var u32")
-    }
-
-    pub fn read_var_i32(buf: &[u8]) -> anyhow::Result<i32> {
-        leb128::read::signed(&mut buf.limit_len(5))
-            .ok()
-            .map(|v| v as i32)
-            .context("failed to read var i32")
-    }
-
-    pub fn read_u32(buf: &[u8]) -> anyhow::Result<u32> {
-        anyhow::ensure!(buf.len() >= 4);
-        Ok(u32::from_le_bytes(buf.to_array::<4>()))
-    }
-
-    pub fn read_i32(buf: &[u8]) -> anyhow::Result<i32> {
-        anyhow::ensure!(buf.len() >= 4);
-        Ok(i32::from_le_bytes(buf.to_array::<4>()))
     }
 
     pub fn as_zeroed(self) -> ScalarRewrite {
@@ -244,69 +219,26 @@ impl ScalarRewrite {
         }
     }
 
-    fn take_len_var(max_bytes: usize, buf: &[u8]) -> anyhow::Result<usize> {
-        let mut i = 0;
-        while i < max_bytes {
-            anyhow::ensure!(buf.get(i).is_some());
-
-            let no_cont = buf[i] & 0x80 == 0;
-
-            if i == max_bytes - 1 {
-                anyhow::ensure!(no_cont);
-            }
-
-            if no_cont {
-                break;
-            }
-
-            i += 1;
-        }
-
-        Ok(i)
-    }
-
     pub fn rewrite_var_u32(buf: &[u8], writer: &mut Vec<u8>, val: u32) -> anyhow::Result<usize> {
-        let _ = leb128::write::unsigned(writer, val as u64);
-        Self::take_len_var(5, buf)
+        writer.write_var_u32(val);
+        buf.read_var_u32_len().map(|(_, v)| v)
     }
 
     pub fn rewrite_var_i32(buf: &[u8], writer: &mut Vec<u8>, val: i32) -> anyhow::Result<usize> {
-        let _ = leb128::write::signed(writer, val as i64);
-        Self::take_len_var(5, buf)
-    }
-
-    pub fn rewrite_var_u64(buf: &[u8], writer: &mut Vec<u8>, val: u64) -> anyhow::Result<usize> {
-        let _ = leb128::write::unsigned(writer, val);
-        Self::take_len_var(10, buf)
-    }
-
-    pub fn rewrite_var_i64(buf: &[u8], writer: &mut Vec<u8>, val: i64) -> anyhow::Result<usize> {
-        let _ = leb128::write::signed(writer, val);
-        Self::take_len_var(10, buf)
+        writer.write_var_i32(val);
+        buf.read_var_i32_len().map(|(_, v)| v)
     }
 
     pub fn rewrite_u32(buf: &[u8], writer: &mut Vec<u8>, val: u32) -> anyhow::Result<usize> {
-        anyhow::ensure!(buf.len() >= 4);
-        writer.extend_from_slice(&val.to_le_bytes());
+        let _ = buf.read_u32()?;
+        writer.write_u32(val);
         Ok(4)
     }
 
     pub fn rewrite_i32(buf: &[u8], writer: &mut Vec<u8>, val: i32) -> anyhow::Result<usize> {
-        anyhow::ensure!(buf.len() >= 4);
-        writer.extend_from_slice(&val.to_le_bytes());
+        let _ = buf.read_u32()?;
+        writer.write_i32(val);
         Ok(4)
-    }
-
-    pub fn rewrite_u64(buf: &[u8], writer: &mut Vec<u8>, val: u64) -> anyhow::Result<usize> {
-        anyhow::ensure!(buf.len() >= 8);
-        writer.extend_from_slice(&val.to_le_bytes());
-        Ok(8)
-    }
-
-    pub fn rewrite_i64(buf: &[u8], writer: &mut Vec<u8>, val: i64) -> anyhow::Result<usize> {
-        anyhow::ensure!(buf.len() >= 8);
-        writer.extend_from_slice(&val.to_le_bytes());
-        Ok(8)
     }
 
     pub fn rewrite(self, buf: &[u8], writer: &mut Vec<u8>) -> anyhow::Result<usize> {
