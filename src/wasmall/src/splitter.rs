@@ -9,7 +9,7 @@ use wasmparser::{
 
 use crate::{
     coder::{WasmallArchive, WasmallWriter},
-    reloc::{rewrite_relocated, RelocEntry, RelocSection},
+    reloc::{RelocEntry, RelocSection},
     util::{len_of, Leb128WriteExt, VecExt},
 };
 
@@ -146,8 +146,6 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                     while let Some(Payload::CodeSectionEntry(func)) = parser.peek() {
                         parser.next();
 
-                        let mut blob = writer.push_blob();
-
                         // Extend the range byte view to include the size field in the function
                         let func_range = func.range();
                         let size_field_byte_count =
@@ -183,6 +181,7 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
 
                         // Transform the blob's globally-indexed relocations into locally-indexed
                         // relocations for the `WasmallWriter`.
+                        let mut local_relocations = Vec::new();
                         {
                             let mut global_to_local_sym_and_value_map =
                                 <FxHashMap<u32, (u32, u32)>>::default();
@@ -219,34 +218,19 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                                         }
                                     };
 
-                                blob.push_reloc(
+                                local_relocations.push((
                                     RelocEntry {
                                         offset: reloc.offset - entry_start,
                                         index: local_sym,
                                         ..*reloc
                                     },
                                     reloc_value,
-                                );
+                                ));
                             }
                         }
 
                         // Complete the blob
-                        blob.finish(|buf| {
-                            // This should not fail because we already validated all of these.
-                            // TODO
-                            // rewrite_relocated(
-                            //     entry_data,
-                            //     buf,
-                            //     relocations.iter().map(|reloc| {
-                            //         (
-                            //             (reloc.offset - entry_start) as usize,
-                            //             reloc.ty.unwrap().rewrite_kind().as_zeroed(),
-                            //         )
-                            //     }),
-                            // )
-                            // .unwrap();
-                            buf.extend_from_slice(entry_data);
-                        });
+                        writer.push_blob(&local_relocations, entry_data);
                     }
                 }
                 // TODO: Handle data segments as well
@@ -255,10 +239,7 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                         .as_section()
                         // Don't include custom sections since our runtime isn't going to use them
                         // whatsoever.
-                        .filter(
-                            // TODO: Actually filter them out once testing is done.
-                            |_| true, /* !matches!(payload, Payload::CustomSection(_)) */
-                        )
+                        .filter(|_| !matches!(payload, Payload::CustomSection(_)))
                     {
                         writer.push_verbatim::<anyhow::Result<_>>(|sink| {
                             // Write section ID

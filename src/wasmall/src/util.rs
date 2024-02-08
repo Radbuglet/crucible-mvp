@@ -159,60 +159,78 @@ pub trait Leb128ReadExt: ExtensionFor<[u8]> {
 
 impl Leb128ReadExt for [u8] {}
 
-pub trait Leb128WriteExt: Extend<u8> {
+pub trait BufWriter {
+    fn push(&mut self, v: u8) {
+        self.extend(&[v]);
+    }
+
+    fn extend(&mut self, v: &[u8]);
+}
+
+impl BufWriter for Vec<u8> {
+    fn push(&mut self, v: u8) {
+        self.push(v)
+    }
+
+    fn extend(&mut self, v: &[u8]) {
+        self.extend_from_slice(v)
+    }
+}
+
+pub trait Leb128WriteExt: BufWriter {
     fn write_u8(&mut self, v: u8) {
-        self.extend([v]);
+        self.extend(&[v]);
     }
 
     fn write_u32(&mut self, v: u32) {
-        self.extend(v.to_le_bytes());
+        self.extend(&v.to_le_bytes());
     }
 
     fn write_i32(&mut self, v: i32) {
-        self.extend(v.to_le_bytes());
+        self.extend(&v.to_le_bytes());
     }
 
     fn write_u64(&mut self, v: u64) {
-        self.extend(v.to_le_bytes());
+        self.extend(&v.to_le_bytes());
     }
 
     fn write_i64(&mut self, v: i64) {
-        self.extend(v.to_le_bytes());
+        self.extend(&v.to_le_bytes());
     }
 
     fn write_var_u32(&mut self, v: u32) {
         let mut buf = [0u8; 5];
         let written = leb128::write::unsigned(&mut &mut buf[..], v.into()).unwrap();
-        self.extend(buf[0..written].iter().copied())
+        self.extend(&buf[0..written])
     }
 
     fn write_var_i32(&mut self, v: i32) {
         let mut buf = [0u8; 5];
         let written = leb128::write::signed(&mut &mut buf[..], v.into()).unwrap();
-        self.extend(buf[0..written].iter().copied())
+        self.extend(&buf[0..written])
     }
 
     fn write_var_u64(&mut self, v: u64) {
         let mut buf = [0u8; 10];
         let written = leb128::write::unsigned(&mut &mut buf[..], v).unwrap();
-        self.extend(buf[0..written].iter().copied())
+        self.extend(&buf[0..written])
     }
 
     fn write_var_i64(&mut self, v: i64) {
         let mut buf = [0u8; 10];
         let written = leb128::write::signed(&mut &mut buf[..], v).unwrap();
-        self.extend(buf[0..written].iter().copied())
+        self.extend(&buf[0..written])
     }
 }
 
-impl<E: ?Sized + Extend<u8>> Leb128WriteExt for E {}
+impl<E: ?Sized + BufWriter> Leb128WriteExt for E {}
 
 #[derive(Debug, Clone, Default)]
 pub struct LenCounter(pub usize);
 
-impl Extend<u8> for LenCounter {
-    fn extend<T: IntoIterator<Item = u8>>(&mut self, iter: T) {
-        self.0 += iter.into_iter().count();
+impl BufWriter for LenCounter {
+    fn extend(&mut self, v: &[u8]) {
+        self.0 += v.len();
     }
 }
 
