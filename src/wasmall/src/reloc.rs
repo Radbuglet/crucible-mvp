@@ -2,7 +2,7 @@
 
 use wasmparser::{BinaryReader, FromReader, SectionLimited};
 
-use crate::util::{BufWriter, Leb128ReadExt, Leb128WriteExt};
+use crate::util::{BufWriter, ByteBufReader, ByteBufSliceExt, Leb128WriteExt};
 
 // === Parsing === //
 
@@ -147,7 +147,7 @@ pub fn rewrite_relocated<W: BufWriter, C>(
         writer.extend(&buf[buf_cursor..reloc_start]);
 
         // Push the new relocation bytes.
-        let reloc_end = reloc_start + rewriter.rewrite(&buf[reloc_start..], writer, cx)?;
+        let reloc_end = reloc_start + buf.try_len_of_reader(|c| rewriter.rewrite(c, writer, cx))?;
 
         // Bump the `buf_cursor`
         buf_cursor = reloc_end;
@@ -160,14 +160,14 @@ pub fn rewrite_relocated<W: BufWriter, C>(
 }
 
 pub trait Rewriter<W, C> {
-    fn rewrite(self, buf: &[u8], writer: &mut W, cx: &mut C) -> anyhow::Result<usize>;
+    fn rewrite(self, buf: &mut ByteBufReader, writer: &mut W, cx: &mut C) -> anyhow::Result<()>;
 }
 
 impl<W, F, C> Rewriter<W, C> for F
 where
-    F: FnOnce(&[u8], &mut W, &mut C) -> anyhow::Result<usize>,
+    F: FnOnce(&mut ByteBufReader, &mut W, &mut C) -> anyhow::Result<()>,
 {
-    fn rewrite(self, buf: &[u8], writer: &mut W, cx: &mut C) -> anyhow::Result<usize> {
+    fn rewrite(self, buf: &mut ByteBufReader, writer: &mut W, cx: &mut C) -> anyhow::Result<()> {
         self(buf, writer, cx)
     }
 }
@@ -181,7 +181,7 @@ pub enum ScalarRewriteKind {
 }
 
 impl ScalarRewriteKind {
-    pub fn read(self, buf: &[u8]) -> anyhow::Result<ScalarRewrite> {
+    pub fn read(self, buf: &mut ByteBufReader) -> anyhow::Result<ScalarRewrite> {
         match self {
             Self::VarU32 => buf.read_var_u32().map(ScalarRewrite::VarU32),
             Self::VarI32 => buf.read_var_i32().map(ScalarRewrite::VarI32),
@@ -234,38 +234,48 @@ impl ScalarRewrite {
     }
 
     pub fn rewrite_var_u32(
-        buf: &[u8],
+        buf: &mut ByteBufReader,
         writer: &mut impl BufWriter,
         val: u32,
-    ) -> anyhow::Result<usize> {
+    ) -> anyhow::Result<()> {
+        buf.read_var_u32()?;
         writer.write_var_u32(val);
-        buf.read_var_u32_len().map(|(_, v)| v)
+        Ok(())
     }
 
     pub fn rewrite_var_i32(
-        buf: &[u8],
+        buf: &mut ByteBufReader,
         writer: &mut impl BufWriter,
         val: i32,
-    ) -> anyhow::Result<usize> {
+    ) -> anyhow::Result<()> {
+        buf.read_var_i32()?;
         writer.write_var_i32(val);
-        buf.read_var_i32_len().map(|(_, v)| v)
+        Ok(())
     }
 
-    pub fn rewrite_u32(buf: &[u8], writer: &mut impl BufWriter, val: u32) -> anyhow::Result<usize> {
-        let _ = buf.read_u32()?;
+    pub fn rewrite_u32(
+        buf: &mut ByteBufReader,
+        writer: &mut impl BufWriter,
+        val: u32,
+    ) -> anyhow::Result<()> {
+        buf.read_u32()?;
         writer.write_u32(val);
-        Ok(4)
+        Ok(())
     }
 
-    pub fn rewrite_i32(buf: &[u8], writer: &mut impl BufWriter, val: i32) -> anyhow::Result<usize> {
-        let _ = buf.read_u32()?;
+    pub fn rewrite_i32(
+        buf: &mut ByteBufReader,
+        writer: &mut impl BufWriter,
+        val: i32,
+    ) -> anyhow::Result<()> {
+        buf.read_i32()?;
         writer.write_i32(val);
-        Ok(4)
+        Ok(())
     }
 }
 
 impl<W: BufWriter, C> Rewriter<W, C> for ScalarRewrite {
-    fn rewrite(self, buf: &[u8], writer: &mut W, _cx: &mut C) -> anyhow::Result<usize> {
+    fn rewrite(self, buf: &mut ByteBufReader, writer: &mut W, _cx: &mut C) -> anyhow::Result<()> {
         use ScalarRewrite::*;
 
         match self {

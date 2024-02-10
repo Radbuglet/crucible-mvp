@@ -1,4 +1,12 @@
-use std::io::ErrorKind;
+use core::fmt;
+use std::{
+    collections::BTreeMap,
+    io::ErrorKind,
+    marker::PhantomData,
+    mem,
+    ops::Range,
+    sync::{Mutex, MutexGuard},
+};
 
 // === ExtensionFor === //
 
@@ -62,102 +70,313 @@ pub trait SliceExt<T>: ExtensionFor<[T]> {
 
 impl<T> SliceExt<T> for [T] {}
 
-// === Codec Utils === //
+// === OffsetTracker === //
 
-pub trait Leb128ReadExt: ExtensionFor<[u8]> {
-    fn read_u8(&self) -> anyhow::Result<u8> {
-        anyhow::ensure!(self.v().len() >= 1);
-        Ok(self.v()[0])
-    }
+#[derive(Debug)]
+pub struct OffsetTracker<'a> {
+    _ty: PhantomData<&'a [()]>,
+    range: Range<usize>,
+}
 
-    fn read_u32(&self) -> anyhow::Result<u32> {
-        anyhow::ensure!(self.v().len() >= 4);
-        Ok(u32::from_le_bytes(self.v()[0..4].to_array()))
-    }
-
-    fn read_i32(&self) -> anyhow::Result<i32> {
-        anyhow::ensure!(self.v().len() >= 4);
-        Ok(i32::from_le_bytes(self.v()[0..4].to_array()))
-    }
-
-    fn read_u64(&self) -> anyhow::Result<u64> {
-        anyhow::ensure!(self.v().len() >= 8);
-        Ok(u64::from_le_bytes(self.v()[0..8].to_array()))
-    }
-
-    fn read_i64(&self) -> anyhow::Result<i64> {
-        anyhow::ensure!(self.v().len() >= 8);
-        Ok(i64::from_le_bytes(self.v()[0..8].to_array()))
-    }
-
-    fn read_var_u32_len(&self) -> anyhow::Result<(u32, usize)> {
-        let mut reader = self.v().limit_len(5);
-        match leb128::read::unsigned(&mut reader) {
-            Ok(v) => Ok((v as u32, 5 - reader.len())),
-            Err(leb128::read::Error::Overflow) => {
-                anyhow::bail!("LEB128-encoded u32 would overflow")
-            }
-            Err(leb128::read::Error::IoError(err)) if err.kind() == ErrorKind::UnexpectedEof => {
-                anyhow::bail!("not enough bytes to read LEB128-encoded u32")
-            }
-            _ => unreachable!(),
+impl OffsetTracker<'_> {
+    // Maps tracked slice starts to slice ends.
+    fn get_slices() -> MutexGuard<'static, BTreeMap<usize, usize>> {
+        static SLICES: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
+        match SLICES.lock() {
+            Ok(guard) => guard,
+            Err(guard) => guard.into_inner(),
         }
     }
 
-    fn read_var_u32(&self) -> anyhow::Result<u32> {
-        self.read_var_u32_len().map(|(v, _)| v)
-    }
+    pub fn new_raw(range: Range<usize>) -> Self {
+        let mut slices = Self::get_slices();
 
-    fn read_var_i32_len(&self) -> anyhow::Result<(i32, usize)> {
-        let mut reader = self.v().limit_len(5);
-        match leb128::read::signed(&mut reader) {
-            Ok(v) => Ok((v as i32, 5 - reader.len())),
-            Err(leb128::read::Error::Overflow) => {
-                anyhow::bail!("LEB128-encoded i32 would overflow")
-            }
-            Err(leb128::read::Error::IoError(err)) if err.kind() == ErrorKind::UnexpectedEof => {
-                anyhow::bail!("not enough bytes to read LEB128-encoded i32")
-            }
-            _ => unreachable!(),
+        // Ensure that the range is properly formed.
+        assert!(range.start <= range.end);
+
+        // See if there are any ranges that start before our end.
+        if let Some((_, &closest_end)) = slices.range(..range.end).next() {
+            // If there is, ensure that it ends before we begin. This is sufficient to ensure that
+            // all ranges starting before us don't overlap with us because all subsequent range ends
+            // are less than or equal to this range's end by the no-overlap invariant.
+            assert!(closest_end <= range.start);
+        }
+
+        // See if we're about to collide into the start of the next range.
+        if let Some((&closest_start, _)) = slices.range(range.start..).next() {
+            // ibid
+            assert!(range.end <= closest_start);
+        }
+
+        // Our range does not overlap so let's insert it.
+        slices.insert(range.start, range.end);
+
+        Self {
+            _ty: PhantomData,
+            range,
         }
     }
 
-    fn read_var_i32(&self) -> anyhow::Result<i32> {
-        self.read_var_i32_len().map(|(v, _)| v)
+    pub fn lookup_parent_raw(addr: usize) -> Option<Range<usize>> {
+        Self::get_slices()
+            .range(..addr)
+            .next()
+            .map(|(&start, &end)| start..end)
+            .filter(|range| range.contains(&addr))
     }
 
-    fn read_var_u64_len(&self) -> anyhow::Result<(u64, usize)> {
-        let mut reader = self.v().limit_len(10);
-        match leb128::read::unsigned(&mut reader) {
-            Ok(v) => Ok((v, 10 - reader.len())),
-            Err(leb128::read::Error::Overflow) => {
-                anyhow::bail!("LEB128-encoded u64 would overflow")
-            }
-            _ => unreachable!(),
+    pub fn cast_lifetime<'b>(self) -> OffsetTracker<'b> {
+        let range = self.range.clone();
+        std::mem::forget(self);
+        OffsetTracker {
+            _ty: PhantomData,
+            range,
         }
-    }
-
-    fn read_var_u64(&self) -> anyhow::Result<u64> {
-        self.read_var_u64_len().map(|(v, _)| v)
-    }
-
-    fn read_var_i64_len(&self) -> anyhow::Result<(i64, usize)> {
-        let mut reader = self.v().limit_len(10);
-        match leb128::read::signed(&mut reader) {
-            Ok(v) => Ok((v, 10 - reader.len())),
-            Err(leb128::read::Error::Overflow) => {
-                anyhow::bail!("LEB128-encoded i64 would overflow")
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    fn read_var_i64(&self) -> anyhow::Result<i64> {
-        self.read_var_i64_len().map(|(v, _)| v)
     }
 }
 
-impl Leb128ReadExt for [u8] {}
+impl Drop for OffsetTracker<'_> {
+    fn drop(&mut self) {
+        Self::get_slices().remove(&self.range.start);
+    }
+}
+
+// High-level interface
+impl OffsetTracker<'_> {
+    pub fn new<T>(slice: &[T]) -> Self {
+        let range = slice.as_ptr_range();
+        let range = (range.start as usize)..(range.end as usize);
+        Self::new_raw(range)
+    }
+
+    pub fn index_in_parent<T>(value: *const T) -> Option<usize> {
+        let value = value as usize;
+        Self::lookup_parent_raw(value).map(|range| (value - range.start) / mem::size_of::<T>())
+    }
+}
+
+pub struct FmtOffset<T>(pub *const T);
+
+impl<T> Copy for FmtOffset<T> {}
+
+impl<T> Clone for FmtOffset<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> fmt::Display for FmtOffset<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(offset) = OffsetTracker::index_in_parent(self.0) {
+            offset.fmt(f)
+        } else {
+            f.write_str("offset unavailable")
+        }
+    }
+}
+
+// === Leb128ReadExt === //
+
+// Reader
+pub trait LookaheadResult {
+    fn is_truthy(&self) -> bool;
+}
+
+impl<T, E> LookaheadResult for Result<T, E> {
+    fn is_truthy(&self) -> bool {
+        self.is_ok()
+    }
+}
+
+impl<T> LookaheadResult for Option<T> {
+    fn is_truthy(&self) -> bool {
+        self.is_some()
+    }
+}
+
+impl LookaheadResult for bool {
+    fn is_truthy(&self) -> bool {
+        *self
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ByteBufReader<'a>(pub &'a [u8]);
+
+impl<'a> ByteBufReader<'a> {
+    pub fn global_offset(&self) -> FmtOffset<u8> {
+        FmtOffset(self.0.as_ptr())
+    }
+
+    pub fn peek(&self, count: usize) -> anyhow::Result<&[u8]> {
+        anyhow::ensure!(
+            self.0.len() >= count,
+            "failed to read {count} byte{} at position {}",
+            if count == 1 { "" } else { "s" },
+            self.global_offset(),
+        );
+        Ok(&self.0[0..count])
+    }
+
+    pub fn consume(&mut self, count: usize) -> anyhow::Result<&[u8]> {
+        anyhow::ensure!(
+            self.0.len() >= count,
+            "failed to read {count} byte{} at position {}",
+            if count == 1 { "" } else { "s" },
+            self.global_offset(),
+        );
+
+        let (read, remainder) = self.0.split_at(count);
+        self.0 = remainder;
+        Ok(read)
+    }
+
+    pub fn consume_arr<const N: usize>(&mut self) -> anyhow::Result<[u8; N]> {
+        self.consume(N).map(|v| v.to_array())
+    }
+
+    pub fn advance(&mut self, count: usize) {
+        self.consume(count).unwrap();
+    }
+
+    pub fn lookahead<R: LookaheadResult>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let mut fork = self.clone();
+        let res = f(&mut fork);
+        if res.is_truthy() {
+            *self = fork;
+        }
+        res
+    }
+
+    pub fn read_u8(&mut self) -> anyhow::Result<u8> {
+        self.consume_arr().map(u8::from_le_bytes)
+    }
+
+    pub fn read_u32(&mut self) -> anyhow::Result<u32> {
+        self.consume_arr().map(u32::from_le_bytes)
+    }
+
+    pub fn read_i32(&mut self) -> anyhow::Result<i32> {
+        self.consume_arr().map(i32::from_le_bytes)
+    }
+
+    pub fn read_u64(&mut self) -> anyhow::Result<u64> {
+        self.consume_arr().map(u64::from_le_bytes)
+    }
+
+    pub fn read_i64(&mut self) -> anyhow::Result<i64> {
+        self.consume_arr().map(i64::from_le_bytes)
+    }
+
+    pub fn read_var_u32(&mut self) -> anyhow::Result<u32> {
+        let mut reader = self.0.limit_len(5);
+
+        match leb128::read::unsigned(&mut reader) {
+            Ok(v) => {
+                self.advance(5 - reader.len());
+                Ok(v as u32)
+            }
+            Err(leb128::read::Error::Overflow) => Err(anyhow::anyhow!(
+                "LEB128-encoded `u32` starting at {} would overflow",
+                self.global_offset()
+            )),
+            Err(leb128::read::Error::IoError(err)) if err.kind() == ErrorKind::UnexpectedEof => {
+                Err(anyhow::anyhow!(
+                    "not enough bytes to read LEB128-encoded `u32` starting at {}",
+                    self.global_offset()
+                ))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn read_var_i32(&mut self) -> anyhow::Result<i32> {
+        let mut reader = self.0.limit_len(5);
+
+        match leb128::read::signed(&mut reader) {
+            Ok(v) => {
+                self.advance(5 - reader.len());
+                Ok(v as i32)
+            }
+            Err(leb128::read::Error::Overflow) => Err(anyhow::anyhow!(
+                "LEB128-encoded `i32` starting at {} would overflow",
+                self.global_offset()
+            )),
+            Err(leb128::read::Error::IoError(err)) if err.kind() == ErrorKind::UnexpectedEof => {
+                Err(anyhow::anyhow!(
+                    "not enough bytes to read LEB128-encoded `i32` starting at {}",
+                    self.global_offset()
+                ))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn read_var_u64(&mut self) -> anyhow::Result<u64> {
+        let mut reader = self.0.limit_len(10);
+
+        match leb128::read::unsigned(&mut reader) {
+            Ok(v) => {
+                self.advance(10 - reader.len());
+                Ok(v)
+            }
+            Err(leb128::read::Error::Overflow) => Err(anyhow::anyhow!(
+                "LEB128-encoded `u64` starting at {} would overflow",
+                self.global_offset()
+            )),
+            Err(leb128::read::Error::IoError(err)) if err.kind() == ErrorKind::UnexpectedEof => {
+                Err(anyhow::anyhow!(
+                    "not enough bytes to read LEB128-encoded `u64` starting at {}",
+                    self.global_offset()
+                ))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn read_var_i64(&mut self) -> anyhow::Result<i64> {
+        let mut reader = self.0.limit_len(10);
+
+        match leb128::read::signed(&mut reader) {
+            Ok(v) => {
+                self.advance(10 - reader.len());
+                Ok(v)
+            }
+            Err(leb128::read::Error::Overflow) => Err(anyhow::anyhow!(
+                "LEB128-encoded `i64` starting at {} would overflow",
+                self.global_offset()
+            )),
+            Err(leb128::read::Error::IoError(err)) if err.kind() == ErrorKind::UnexpectedEof => {
+                Err(anyhow::anyhow!(
+                    "not enough bytes to read LEB128-encoded `i64` starting at {}",
+                    self.global_offset()
+                ))
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+pub trait ByteBufSliceExt: ExtensionFor<[u8]> {
+    fn try_len_of_reader(
+        &self,
+        f: impl FnOnce(&mut ByteBufReader<'_>) -> anyhow::Result<()>,
+    ) -> anyhow::Result<usize> {
+        let mut buf = ByteBufReader(self.v());
+        f(&mut buf)?;
+        Ok(self.v().len() - buf.0.len())
+    }
+
+    fn len_of_reader(&self, f: impl FnOnce(&mut ByteBufReader<'_>)) -> usize {
+        let mut buf = ByteBufReader(self.v());
+        f(&mut buf);
+        self.v().len() - buf.0.len()
+    }
+}
+
+impl ByteBufSliceExt for [u8] {}
+
+// === Leb128WriteExt === //
 
 pub trait BufWriter {
     fn push(&mut self, v: u8) {

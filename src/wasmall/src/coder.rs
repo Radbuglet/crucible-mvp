@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     reloc::{rewrite_relocated, RelocEntry, Rewriter},
-    util::{Leb128WriteExt, LenCounter},
+    util::{ByteBufReader, Leb128WriteExt, LenCounter},
 };
 
 // === Writer === //
@@ -71,7 +71,7 @@ impl WasmallWriter {
                 relocations.iter().map(|(reloc, _)| {
                     (
                         reloc.offset as usize,
-                        move |buf: &[u8], writer: &mut LenCounter, cx: &mut Self| {
+                        move |buf: &mut ByteBufReader, writer: &mut LenCounter, cx: &mut Self| {
                             // Write relocation type.
                             cx.buf.push(reloc.ty.unwrap() as u8);
 
@@ -86,13 +86,15 @@ impl WasmallWriter {
                                 cx.buf.write_var_i32(addend);
                             }
 
-                            Ok(reloc
+                            reloc
                                 .ty
                                 .unwrap()
                                 .rewrite_kind()
                                 .as_zeroed()
                                 .rewrite(buf, writer, cx)
-                                .unwrap())
+                                .unwrap();
+
+                            Ok(())
                         },
                     )
                 }),
