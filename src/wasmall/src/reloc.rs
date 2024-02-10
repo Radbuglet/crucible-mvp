@@ -211,13 +211,17 @@ impl ScalarRewriteKind {
         }
     }
 
-    pub fn as_zeroed(self) -> ScalarRewrite {
+    pub fn with_value(self, value: u32) -> ScalarRewrite {
         match self {
-            ScalarRewriteKind::VarU32 => ScalarRewrite::VarU32(0),
-            ScalarRewriteKind::VarI32 => ScalarRewrite::VarI32(0),
-            ScalarRewriteKind::U32 => ScalarRewrite::U32(0),
-            ScalarRewriteKind::I32 => ScalarRewrite::I32(0),
+            ScalarRewriteKind::VarU32 => ScalarRewrite::VarU32(value),
+            ScalarRewriteKind::VarI32 => ScalarRewrite::VarI32(value as i32),
+            ScalarRewriteKind::U32 => ScalarRewrite::U32(value),
+            ScalarRewriteKind::I32 => ScalarRewrite::I32(value as i32),
         }
+    }
+
+    pub fn as_zeroed(self) -> ScalarRewrite {
+        self.with_value(0)
     }
 }
 

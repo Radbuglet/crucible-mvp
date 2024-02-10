@@ -420,6 +420,19 @@ impl<'a, P> ByteParseList<'a, P> {
     pub fn cursor(&self) -> ByteCursor<'a> {
         self.cursor.clone()
     }
+
+    pub fn pre_validated(&self) -> anyhow::Result<(usize, impl Iterator<Item = P::Out>)>
+    where
+        P: ByteParse<'a>,
+    {
+        let mut count = 0;
+        for item in self.clone() {
+            let _ = item?;
+            count += 1;
+        }
+
+        Ok((count, self.clone().map(|v| v.unwrap())))
+    }
 }
 
 impl<'a, P: ByteParse<'a>> Iterator for ByteParseList<'a, P> {

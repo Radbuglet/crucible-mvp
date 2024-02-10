@@ -293,11 +293,35 @@ impl<'a> WasmallModSegBlob<'a> {
     pub fn reloc_values(&self) -> ByteParseList<'a, VarU32> {
         ByteParseList::new(ByteCursor(self.reloc_values))
     }
+
+    pub fn write(&self, blob: &WasmallBlob<'_>, out: &mut Vec<u8>) -> anyhow::Result<()> {
+        let (reloc_values_len, reloc_values) = self.reloc_values().pre_validated()?;
+
+        anyhow::ensure!(reloc_values_len == blob.relocation_count as usize);
+
+        rewrite_relocated(
+            blob.data,
+            out,
+            &mut (),
+            blob.relocations().zip(reloc_values).map(|(reloc, val)| {
+                let reloc = reloc.unwrap();
+                (
+                    reloc.offset as usize,
+                    reloc
+                        .ty
+                        .rewrite_kind()
+                        .with_value(val.wrapping_add(reloc.addend.unwrap_or(0) as u32)),
+                )
+            }),
+        )?;
+        Ok(())
+    }
 }
 
 // Blob
 #[derive(Debug, Clone)]
 pub struct WasmallBlob<'a> {
+    relocation_count: u32,
     relocations: &'a [u8],
     data: &'a [u8],
 }
@@ -306,13 +330,13 @@ impl<'a> ByteParse<'a> for WasmallBlob<'a> {
     type Out = Self;
 
     fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
-        let relocations = buf
+        let relocation_count = buf
             .read_var_u32()
             .context("failed to read relocation count")?;
 
         let relocations = buf.lookahead_annotated("relocation list", |c| {
             c.get_slice_read(|c| {
-                for _ in 0..relocations {
+                for _ in 0..relocation_count {
                     RelocEntry::parse(c)?;
                 }
 
@@ -323,7 +347,11 @@ impl<'a> ByteParse<'a> for WasmallBlob<'a> {
 
         let data = buf.0;
 
-        Ok(Self { relocations, data })
+        Ok(Self {
+            relocation_count,
+            relocations,
+            data,
+        })
     }
 }
 
