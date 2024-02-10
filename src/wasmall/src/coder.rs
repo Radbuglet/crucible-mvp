@@ -95,7 +95,7 @@ impl WasmallWriter {
                         reloc.offset as usize,
                         move |buf: &mut ByteCursor, writer: &mut LenCounter, cx: &mut Self| {
                             // Write relocation type.
-                            cx.buf.push(reloc.ty.unwrap() as u8);
+                            cx.buf.push(reloc.ty as u8);
 
                             // Write relocation index
                             cx.buf.write_var_u32(writer.0 as u32);
@@ -110,7 +110,6 @@ impl WasmallWriter {
 
                             reloc
                                 .ty
-                                .unwrap()
                                 .rewrite_kind()
                                 .as_zeroed()
                                 .rewrite(buf, writer, cx)
@@ -128,12 +127,9 @@ impl WasmallWriter {
                 data,
                 &mut self.buf,
                 &mut (),
-                relocations.iter().map(|(reloc, _)| {
-                    (
-                        reloc.offset as usize,
-                        reloc.ty.unwrap().rewrite_kind().as_zeroed(),
-                    )
-                }),
+                relocations
+                    .iter()
+                    .map(|(reloc, _)| (reloc.offset as usize, reloc.ty.rewrite_kind().as_zeroed())),
             )
             .unwrap();
 
@@ -221,18 +217,18 @@ impl<'a> ByteParse<'a> for WasmallMod<'a> {
 }
 
 impl<'a> WasmallMod<'a> {
-    pub fn segments(&self) -> ByteParseList<'a, WasmallModSegment<'a>> {
+    pub fn segments(&self) -> ByteParseList<'a, WasmallModSeg<'a>> {
         ByteParseList::new(ByteCursor(self.segments))
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum WasmallModSegment<'a> {
-    Verbatim(ModuleSegmentVerbatim<'a>),
-    Blob(ModuleSegmentBlob<'a>),
+pub enum WasmallModSeg<'a> {
+    Verbatim(WasmallModSegVerbatim<'a>),
+    Blob(WasmallModSegBlob<'a>),
 }
 
-impl<'a> ByteParse<'a> for WasmallModSegment<'a> {
+impl<'a> ByteParse<'a> for WasmallModSeg<'a> {
     type Out = Self;
 
     fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
@@ -240,41 +236,41 @@ impl<'a> ByteParse<'a> for WasmallModSegment<'a> {
             match buf
                 .lookahead_annotated("module kind", |c| SegmentKind::from_byte(c.read_u8()?))?
             {
-                SegmentKind::Verbatim => Self::Verbatim(ModuleSegmentVerbatim::parse(buf)?),
-                SegmentKind::Blob => Self::Blob(ModuleSegmentBlob::parse(buf)?),
+                SegmentKind::Verbatim => Self::Verbatim(WasmallModSegVerbatim::parse(buf)?),
+                SegmentKind::Blob => Self::Blob(WasmallModSegBlob::parse(buf)?),
             },
         )
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ModuleSegmentVerbatim<'a> {
+pub struct WasmallModSegVerbatim<'a> {
     data: &'a [u8],
 }
 
-impl<'a> ByteParse<'a> for ModuleSegmentVerbatim<'a> {
+impl<'a> ByteParse<'a> for WasmallModSegVerbatim<'a> {
     type Out = Self;
 
     fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
-        Ok(ModuleSegmentVerbatim {
+        Ok(WasmallModSegVerbatim {
             data: VarByteVec::parse(buf).context("failed to read verbatim segment data")?,
         })
     }
 }
 
-impl<'a> ModuleSegmentVerbatim<'a> {
+impl<'a> WasmallModSegVerbatim<'a> {
     pub fn data(&self) -> &'a [u8] {
         self.data
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ModuleSegmentBlob<'a> {
+pub struct WasmallModSegBlob<'a> {
     hash: &'a [u8],
     reloc_values: &'a [u8],
 }
 
-impl<'a> ByteParse<'a> for ModuleSegmentBlob<'a> {
+impl<'a> ByteParse<'a> for WasmallModSegBlob<'a> {
     type Out = Self;
 
     fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
@@ -289,12 +285,54 @@ impl<'a> ByteParse<'a> for ModuleSegmentBlob<'a> {
     }
 }
 
-impl<'a> ModuleSegmentBlob<'a> {
+impl<'a> WasmallModSegBlob<'a> {
     pub fn hash(&self) -> Hash {
         Hash::from_bytes(self.hash.to_array())
     }
 
     pub fn reloc_values(&self) -> ByteParseList<'a, VarU32> {
         ByteParseList::new(ByteCursor(self.reloc_values))
+    }
+}
+
+// Blob
+#[derive(Debug, Clone)]
+pub struct WasmallBlob<'a> {
+    relocations: &'a [u8],
+    data: &'a [u8],
+}
+
+impl<'a> ByteParse<'a> for WasmallBlob<'a> {
+    type Out = Self;
+
+    fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
+        let relocations = buf
+            .read_var_u32()
+            .context("failed to read relocation count")?;
+
+        let relocations = buf.lookahead_annotated("relocation list", |c| {
+            c.get_slice_read(|c| {
+                for _ in 0..relocations {
+                    RelocEntry::parse(c)?;
+                }
+
+                Ok(())
+            })
+            .map(|(_, r)| r)
+        })?;
+
+        let data = buf.0;
+
+        Ok(Self { relocations, data })
+    }
+}
+
+impl<'a> WasmallBlob<'a> {
+    pub fn relocations(&self) -> ByteParseList<'a, RelocEntry> {
+        ByteParseList::new(ByteCursor(self.relocations))
+    }
+
+    pub fn data(&self) -> &'a [u8] {
+        self.data
     }
 }

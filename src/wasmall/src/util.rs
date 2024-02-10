@@ -248,6 +248,17 @@ impl<'a> ByteCursor<'a> {
             .map_err(|err| err.context(format!("failed to parse {what} starting at {start}")))
     }
 
+    pub fn get_slice_read<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> anyhow::Result<R>,
+    ) -> anyhow::Result<(R, &'a [u8])> {
+        let orig_remainder = self.0;
+        let res = f(self)?;
+        let new_remainder = self.0;
+        let read = &orig_remainder[0..(orig_remainder.len() - new_remainder.len())];
+        Ok((res, read))
+    }
+
     // Specified readers
     pub fn read_u8(&mut self) -> anyhow::Result<u8> {
         self.consume_arr().map(u8::from_le_bytes)
@@ -271,10 +282,11 @@ impl<'a> ByteCursor<'a> {
 
     pub fn read_var_u32(&mut self) -> anyhow::Result<u32> {
         let mut reader = self.0.limit_len(5);
+        let start_len = reader.len();
 
         match leb128::read::unsigned(&mut reader) {
             Ok(v) => {
-                self.advance(5 - reader.len());
+                self.advance(start_len - reader.len());
                 Ok(v as u32)
             }
             Err(leb128::read::Error::Overflow) => Err(anyhow::anyhow!(
@@ -293,10 +305,11 @@ impl<'a> ByteCursor<'a> {
 
     pub fn read_var_i32(&mut self) -> anyhow::Result<i32> {
         let mut reader = self.0.limit_len(5);
+        let start_len = reader.len();
 
         match leb128::read::signed(&mut reader) {
             Ok(v) => {
-                self.advance(5 - reader.len());
+                self.advance(start_len - reader.len());
                 Ok(v as i32)
             }
             Err(leb128::read::Error::Overflow) => Err(anyhow::anyhow!(
@@ -315,10 +328,11 @@ impl<'a> ByteCursor<'a> {
 
     pub fn read_var_u64(&mut self) -> anyhow::Result<u64> {
         let mut reader = self.0.limit_len(10);
+        let start_len = self.0.len();
 
         match leb128::read::unsigned(&mut reader) {
             Ok(v) => {
-                self.advance(10 - reader.len());
+                self.advance(start_len - reader.len());
                 Ok(v)
             }
             Err(leb128::read::Error::Overflow) => Err(anyhow::anyhow!(
@@ -337,10 +351,11 @@ impl<'a> ByteCursor<'a> {
 
     pub fn read_var_i64(&mut self) -> anyhow::Result<i64> {
         let mut reader = self.0.limit_len(10);
+        let start_len = self.0.len();
 
         match leb128::read::signed(&mut reader) {
             Ok(v) => {
-                self.advance(10 - reader.len());
+                self.advance(start_len - reader.len());
                 Ok(v)
             }
             Err(leb128::read::Error::Overflow) => Err(anyhow::anyhow!(

@@ -1,8 +1,8 @@
 //! Utilities for parsing, writing, interpreting, and applying relocations.
 
-use wasmparser::{BinaryReader, FromReader, SectionLimited};
+use anyhow::Context;
 
-use crate::util::{BufWriter, ByteCursor, ByteSliceExt, Leb128WriteExt};
+use crate::util::{BufWriter, ByteCursor, ByteParse, ByteParseList, ByteSliceExt, Leb128WriteExt};
 
 // === Parsing === //
 
@@ -14,37 +14,57 @@ use crate::util::{BufWriter, ByteCursor, ByteSliceExt, Leb128WriteExt};
 #[derive(Debug, Clone)]
 pub struct RelocSection<'a> {
     pub target_section: u32,
-    pub entries: SectionLimited<'a, RelocEntry>,
+    pub entry_count: u32,
+    pub entries: &'a [u8],
 }
 
-impl<'a> FromReader<'a> for RelocSection<'a> {
-    fn from_reader(reader: &mut BinaryReader<'a>) -> wasmparser::Result<Self> {
+impl<'a> ByteParse<'a> for RelocSection<'a> {
+    type Out = Self;
+
+    fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
+        let target_section = buf
+            .read_var_u32()
+            .context("failed to read target section index")?;
+
+        let entry_count = buf
+            .read_var_u32()
+            .context("failed to read relocation entry array count")?;
+
         Ok(Self {
-            target_section: reader.read_var_u32()?,
-            entries: {
-                let start = reader.original_position();
-                SectionLimited::new(reader.read_bytes(reader.bytes_remaining())?, start)?
-            },
+            target_section,
+            entry_count,
+            entries: buf.0,
         })
+    }
+}
+
+impl<'a> RelocSection<'a> {
+    pub fn entries(&self) -> impl Iterator<Item = anyhow::Result<RelocEntry>> + 'a {
+        ByteParseList::<RelocEntry>::new(ByteCursor(self.entries)).take(self.entry_count as usize)
     }
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct RelocEntry {
-    pub ty: Option<RelocEntryType>,
+    pub ty: RelocEntryType,
     pub offset: u32,
     pub index: u32,
     pub addend: Option<i32>,
 }
 
-impl<'a> FromReader<'a> for RelocEntry {
-    fn from_reader(reader: &mut BinaryReader<'a>) -> wasmparser::Result<Self> {
-        let ty = RelocEntryType::parse(reader.read_u8()?);
-        let offset = reader.read_var_u32()?;
-        let index = reader.read_var_u32()?;
+impl ByteParse<'_> for RelocEntry {
+    type Out = Self;
 
-        let addend = if ty.is_some_and(RelocEntryType::has_addend) {
-            Some(reader.read_var_i32()?)
+    fn parse_naked(buf: &mut ByteCursor<'_>) -> anyhow::Result<Self::Out> {
+        let ty = buf.lookahead_annotated("relocation entry type", |c| {
+            RelocEntryType::parse(c.read_u8()?)
+        })?;
+
+        let offset = buf.read_var_u32().context("failed to read offset")?;
+        let index = buf.read_var_u32().context("failed to read index")?;
+
+        let addend = if ty.has_addend() {
+            Some(buf.read_var_i32()?)
         } else {
             None
         };
@@ -75,10 +95,10 @@ pub enum RelocEntryType {
 }
 
 impl RelocEntryType {
-    pub fn parse(v: u8) -> Option<Self> {
+    pub fn parse(v: u8) -> anyhow::Result<Self> {
         use RelocEntryType::*;
 
-        Some(match v {
+        Ok(match v {
             0 => FunctionIndexLeb,
             1 => TableIndexSleb,
             2 => TableIndexI32,
@@ -91,7 +111,7 @@ impl RelocEntryType {
             9 => SectionOffsetI32,
             10 => EventIndexLeb,
             13 => GlobalIndexI32,
-            _ => return None,
+            _ => anyhow::bail!("unknown relocation type {v}"),
         })
     }
 

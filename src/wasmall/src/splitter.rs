@@ -2,18 +2,17 @@ use std::{collections::hash_map, num::Wrapping, ops::Range};
 
 use anyhow::Context;
 use rustc_hash::FxHashMap;
-use wasmparser::{
-    BinaryReader, DefinedDataSymbol, FromReader, Linking, LinkingSectionReader, Parser, Payload,
-    SymbolInfo,
-};
+use wasmparser::{DefinedDataSymbol, Linking, LinkingSectionReader, Parser, Payload, SymbolInfo};
 
 use crate::{
     coder::{WasmallArchive, WasmallWriter},
     reloc::{RelocEntry, RelocSection},
-    util::{len_of, ByteCursor, Leb128WriteExt, VecExt},
+    util::{len_of, ByteCursor, ByteParse, Leb128WriteExt, OffsetTracker, VecExt},
 };
 
 pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
+    let _guard = OffsetTracker::new(src);
+
     // Collect all payloads ahead of time so we don't have to deal with the somewhat arcane parser API.
     let payloads = {
         let mut payloads = Vec::new();
@@ -73,16 +72,11 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                     }
                 }
                 Payload::CustomSection(payload) if payload.name().starts_with("reloc.") => {
-                    let relocs = RelocSection::from_reader(&mut BinaryReader::new_with_offset(
-                        payload.data(),
-                        payload.data_offset(),
-                    ))?;
+                    let relocs = RelocSection::parse(&mut ByteCursor(payload.data()))?;
                     let out_vec = orig_reloc_map.ensure_index(relocs.target_section as usize);
 
-                    for reloc in relocs.entries {
-                        let reloc = reloc?;
-                        anyhow::ensure!(reloc.ty.is_some());
-                        out_vec.push(reloc);
+                    for reloc in relocs.entries() {
+                        out_vec.push(reloc?);
                     }
                 }
                 _ => {}
@@ -190,7 +184,7 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
 
                             for reloc in relocations {
                                 // Determine the value this relocation takes on.
-                                let reloc_ty = reloc.ty.unwrap();
+                                let reloc_ty = reloc.ty;
                                 let reloc_value = reloc_ty
                                     .rewrite_kind()
                                     .read(&mut ByteCursor(

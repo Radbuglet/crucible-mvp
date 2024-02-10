@@ -1,6 +1,6 @@
 use anyhow::Context;
 use wasmall::{
-    coder::{WasmallMod, WasmallModSegment},
+    coder::{WasmallMod, WasmallModSeg},
     splitter::split_module,
     util::{ByteCursor, ByteParse, OffsetTracker},
 };
@@ -16,10 +16,10 @@ fn main() -> anyhow::Result<()> {
 
     for segment in parsed.segments() {
         match segment? {
-            WasmallModSegment::Verbatim(segment) => {
+            WasmallModSeg::Verbatim(segment) => {
                 println!("Found verbatim; length = {}", segment.data().len())
             }
-            WasmallModSegment::Blob(segment) => println!("Found blob; hash: {}", segment.hash()),
+            WasmallModSeg::Blob(segment) => println!("Found blob; hash: {}", segment.hash()),
         }
     }
 
