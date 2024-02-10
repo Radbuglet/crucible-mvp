@@ -1,5 +1,6 @@
 use core::fmt;
 use std::{
+    any::type_name,
     collections::BTreeMap,
     io::ErrorKind,
     marker::PhantomData,
@@ -7,6 +8,8 @@ use std::{
     ops::Range,
     sync::{Mutex, MutexGuard},
 };
+
+use anyhow::Context;
 
 // === ExtensionFor === //
 
@@ -175,40 +178,24 @@ impl<T> fmt::Display for FmtOffset<T> {
     }
 }
 
-// === Leb128ReadExt === //
+// === Reading === //
 
-// Reader
-pub trait LookaheadResult {
-    fn is_truthy(&self) -> bool;
-}
-
-impl<T, E> LookaheadResult for Result<T, E> {
-    fn is_truthy(&self) -> bool {
-        self.is_ok()
-    }
-}
-
-impl<T> LookaheadResult for Option<T> {
-    fn is_truthy(&self) -> bool {
-        self.is_some()
-    }
-}
-
-impl LookaheadResult for bool {
-    fn is_truthy(&self) -> bool {
-        *self
-    }
-}
-
+// ByteCursor
 #[derive(Debug, Clone)]
-pub struct ByteBufReader<'a>(pub &'a [u8]);
+pub struct ByteCursor<'a>(pub &'a [u8]);
 
-impl<'a> ByteBufReader<'a> {
+impl<'a> ByteCursor<'a> {
+    // Debug
     pub fn global_offset(&self) -> FmtOffset<u8> {
         FmtOffset(self.0.as_ptr())
     }
 
-    pub fn peek(&self, count: usize) -> anyhow::Result<&[u8]> {
+    // Primitives
+    pub fn at_eof(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn peek(&self, count: usize) -> anyhow::Result<&'a [u8]> {
         anyhow::ensure!(
             self.0.len() >= count,
             "failed to read {count} byte{} at position {}",
@@ -218,7 +205,7 @@ impl<'a> ByteBufReader<'a> {
         Ok(&self.0[0..count])
     }
 
-    pub fn consume(&mut self, count: usize) -> anyhow::Result<&[u8]> {
+    pub fn consume(&mut self, count: usize) -> anyhow::Result<&'a [u8]> {
         anyhow::ensure!(
             self.0.len() >= count,
             "failed to read {count} byte{} at position {}",
@@ -239,15 +226,29 @@ impl<'a> ByteBufReader<'a> {
         self.consume(count).unwrap();
     }
 
-    pub fn lookahead<R: LookaheadResult>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+    pub fn lookahead<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> anyhow::Result<R>,
+    ) -> anyhow::Result<R> {
         let mut fork = self.clone();
         let res = f(&mut fork);
-        if res.is_truthy() {
+        if res.is_ok() {
             *self = fork;
         }
         res
     }
 
+    pub fn lookahead_annotated<R>(
+        &mut self,
+        what: impl fmt::Display,
+        f: impl FnOnce(&mut Self) -> anyhow::Result<R>,
+    ) -> anyhow::Result<R> {
+        let start = self.global_offset();
+        self.lookahead(f)
+            .map_err(|err| err.context(format!("failed to parse {what} starting at {start}")))
+    }
+
+    // Specified readers
     pub fn read_u8(&mut self) -> anyhow::Result<u8> {
         self.consume_arr().map(u8::from_le_bytes)
     }
@@ -357,26 +358,131 @@ impl<'a> ByteBufReader<'a> {
     }
 }
 
-pub trait ByteBufSliceExt: ExtensionFor<[u8]> {
-    fn try_len_of_reader(
+// ByteSliceExt
+pub trait ByteSliceExt: ExtensionFor<[u8]> {
+    fn try_count_bytes_read(
         &self,
-        f: impl FnOnce(&mut ByteBufReader<'_>) -> anyhow::Result<()>,
+        f: impl FnOnce(&mut ByteCursor<'_>) -> anyhow::Result<()>,
     ) -> anyhow::Result<usize> {
-        let mut buf = ByteBufReader(self.v());
+        let mut buf = ByteCursor(self.v());
         f(&mut buf)?;
         Ok(self.v().len() - buf.0.len())
     }
 
-    fn len_of_reader(&self, f: impl FnOnce(&mut ByteBufReader<'_>)) -> usize {
-        let mut buf = ByteBufReader(self.v());
+    fn count_bytes_read(&self, f: impl FnOnce(&mut ByteCursor<'_>)) -> usize {
+        let mut buf = ByteCursor(self.v());
         f(&mut buf);
         self.v().len() - buf.0.len()
     }
 }
 
-impl ByteBufSliceExt for [u8] {}
+impl ByteSliceExt for [u8] {}
 
-// === Leb128WriteExt === //
+// ByteParse
+pub trait ByteParse<'a>: Sized {
+    type Out;
+
+    fn parse(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
+        buf.lookahead_annotated(type_name::<Self>(), Self::parse_naked)
+    }
+
+    fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out>;
+}
+
+pub struct ByteParseList<'a, P> {
+    _ty: PhantomData<fn() -> P>,
+    cursor: ByteCursor<'a>,
+}
+
+impl<'a, P> ByteParseList<'a, P> {
+    pub fn new(cursor: ByteCursor<'a>) -> Self {
+        Self {
+            _ty: PhantomData,
+            cursor,
+        }
+    }
+
+    pub fn cursor(&self) -> ByteCursor<'a> {
+        self.cursor.clone()
+    }
+}
+
+impl<'a, P: ByteParse<'a>> Iterator for ByteParseList<'a, P> {
+    type Item = anyhow::Result<P::Out>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        (!self.cursor.at_eof()).then(|| P::parse(&mut self.cursor))
+    }
+}
+
+impl<'a, P> fmt::Debug for ByteParseList<'a, P>
+where
+    P: ByteParse<'a>,
+    P::Out: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut f = f.debug_list();
+
+        for item in self.clone() {
+            match item {
+                Ok(v) => {
+                    f.entry(&v);
+                }
+                Err(err) => {
+                    f.entry(&err);
+                    break;
+                }
+            }
+        }
+
+        f.finish()
+    }
+}
+
+impl<P> Clone for ByteParseList<'_, P> {
+    fn clone(&self) -> Self {
+        Self {
+            _ty: PhantomData,
+            cursor: self.cursor.clone(),
+        }
+    }
+}
+
+#[non_exhaustive]
+pub struct VarU32;
+
+impl ByteParse<'_> for VarU32 {
+    type Out = u32;
+
+    fn parse_naked(buf: &mut ByteCursor<'_>) -> anyhow::Result<Self::Out> {
+        buf.read_var_u32()
+    }
+}
+
+#[non_exhaustive]
+pub struct VarI32;
+
+impl ByteParse<'_> for VarI32 {
+    type Out = i32;
+
+    fn parse_naked(buf: &mut ByteCursor<'_>) -> anyhow::Result<Self::Out> {
+        buf.read_var_i32()
+    }
+}
+
+#[non_exhaustive]
+pub struct VarByteVec;
+
+impl<'a> ByteParse<'a> for VarByteVec {
+    type Out = &'a [u8];
+
+    fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
+        let len = buf.read_var_u32().context("failed to read length")?;
+        buf.consume(len as usize)
+    }
+}
+
+// === Writing === //
 
 pub trait BufWriter {
     fn push(&mut self, v: u8) {

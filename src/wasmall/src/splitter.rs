@@ -10,7 +10,7 @@ use wasmparser::{
 use crate::{
     coder::{WasmallArchive, WasmallWriter},
     reloc::{RelocEntry, RelocSection},
-    util::{len_of, ByteBufReader, Leb128WriteExt, VecExt},
+    util::{len_of, ByteCursor, Leb128WriteExt, VecExt},
 };
 
 pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
@@ -193,7 +193,7 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                                 let reloc_ty = reloc.ty.unwrap();
                                 let reloc_value = reloc_ty
                                     .rewrite_kind()
-                                    .read(&mut ByteBufReader(
+                                    .read(&mut ByteCursor(
                                         &entry_data[(reloc.offset - entry_start) as usize..],
                                     ))?
                                     .as_u32_offset(reloc.addend.unwrap_or(0));

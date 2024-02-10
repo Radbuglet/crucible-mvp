@@ -1,12 +1,34 @@
 use std::{collections::hash_map, ops::Range};
 
+use anyhow::Context;
 use blake3::{hash, Hash};
 use rustc_hash::FxHashMap;
 
 use crate::{
     reloc::{rewrite_relocated, RelocEntry, Rewriter},
-    util::{ByteBufReader, Leb128WriteExt, LenCounter},
+    util::{
+        len_of, ByteCursor, ByteParse, ByteParseList, Leb128WriteExt, LenCounter, SliceExt,
+        VarByteVec, VarU32,
+    },
 };
+
+// === Common === //
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum SegmentKind {
+    Verbatim = 0,
+    Blob = 1,
+}
+
+impl SegmentKind {
+    pub fn from_byte(v: u8) -> anyhow::Result<Self> {
+        match v {
+            0 => Ok(Self::Verbatim),
+            1 => Ok(Self::Blob),
+            _ => Err(anyhow::anyhow!("unknown segment kind {v}")),
+        }
+    }
+}
 
 // === Writer === //
 
@@ -71,7 +93,7 @@ impl WasmallWriter {
                 relocations.iter().map(|(reloc, _)| {
                     (
                         reloc.offset as usize,
-                        move |buf: &mut ByteBufReader, writer: &mut LenCounter, cx: &mut Self| {
+                        move |buf: &mut ByteCursor, writer: &mut LenCounter, cx: &mut Self| {
                             // Write relocation type.
                             cx.buf.push(reloc.ty.unwrap() as u8);
 
@@ -122,6 +144,15 @@ impl WasmallWriter {
         let concretes = {
             let concretes_start = self.buf.len();
 
+            // Write count
+            let byte_size = len_of(|c| {
+                for (_, v) in relocations {
+                    c.write_var_u32(*v);
+                }
+            });
+            self.buf.write_var_u32(byte_size as u32);
+
+            // Write values
             for (_, v) in relocations {
                 self.buf.write_var_u32(*v);
             }
@@ -144,7 +175,7 @@ impl WasmallWriter {
             match segment {
                 Segment::Verbatim(range) => {
                     out_buf.push(0);
-                    out_buf.write_var_u64(range.len() as u64);
+                    out_buf.write_var_u32(u32::try_from(range.len()).unwrap());
                     out_buf.extend_from_slice(&self.buf[range]);
                 }
                 Segment::Blob {
@@ -170,5 +201,100 @@ impl WasmallWriter {
             blob_buf,
             hashes,
         }
+    }
+}
+
+// === Reader === //
+
+// Module
+#[derive(Debug, Clone)]
+pub struct WasmallMod<'a> {
+    segments: &'a [u8],
+}
+
+impl<'a> ByteParse<'a> for WasmallMod<'a> {
+    type Out = Self;
+
+    fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
+        Ok(Self { segments: buf.0 })
+    }
+}
+
+impl<'a> WasmallMod<'a> {
+    pub fn segments(&self) -> ByteParseList<'a, WasmallModSegment<'a>> {
+        ByteParseList::new(ByteCursor(self.segments))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum WasmallModSegment<'a> {
+    Verbatim(ModuleSegmentVerbatim<'a>),
+    Blob(ModuleSegmentBlob<'a>),
+}
+
+impl<'a> ByteParse<'a> for WasmallModSegment<'a> {
+    type Out = Self;
+
+    fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
+        Ok(
+            match buf
+                .lookahead_annotated("module kind", |c| SegmentKind::from_byte(c.read_u8()?))?
+            {
+                SegmentKind::Verbatim => Self::Verbatim(ModuleSegmentVerbatim::parse(buf)?),
+                SegmentKind::Blob => Self::Blob(ModuleSegmentBlob::parse(buf)?),
+            },
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleSegmentVerbatim<'a> {
+    data: &'a [u8],
+}
+
+impl<'a> ByteParse<'a> for ModuleSegmentVerbatim<'a> {
+    type Out = Self;
+
+    fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
+        Ok(ModuleSegmentVerbatim {
+            data: VarByteVec::parse(buf).context("failed to read verbatim segment data")?,
+        })
+    }
+}
+
+impl<'a> ModuleSegmentVerbatim<'a> {
+    pub fn data(&self) -> &'a [u8] {
+        self.data
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleSegmentBlob<'a> {
+    hash: &'a [u8],
+    reloc_values: &'a [u8],
+}
+
+impl<'a> ByteParse<'a> for ModuleSegmentBlob<'a> {
+    type Out = Self;
+
+    fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
+        let hash = buf
+            .consume(blake3::OUT_LEN)
+            .context("failed to read blob hash")?;
+
+        let reloc_values =
+            VarByteVec::parse(buf).context("failed to read blob relocation values")?;
+
+        Ok(Self { hash, reloc_values })
+    }
+}
+
+impl<'a> ModuleSegmentBlob<'a> {
+    pub fn hash(&self) -> Hash {
+        Hash::from_bytes(self.hash.to_array())
+    }
+
+    pub fn reloc_values(&self) -> ByteParseList<'a, VarU32> {
+        ByteParseList::new(ByteCursor(self.reloc_values))
     }
 }
