@@ -78,7 +78,12 @@ impl WasmallWriter {
         res
     }
 
-    pub fn push_blob(&mut self, relocations: &[(RelocEntry, u32)], data: &[u8]) {
+    pub fn push_blob(
+        &mut self,
+        relocations: &[RelocEntry],
+        relocation_values: &[u32],
+        data: &[u8],
+    ) {
         // Create the blob's data
         let blob_range = {
             let blob_start = self.buf.len();
@@ -90,29 +95,41 @@ impl WasmallWriter {
                 data,
                 &mut LenCounter::default(),
                 self,
-                relocations.iter().map(|(reloc, _)| {
+                relocations.iter().map(|reloc| {
                     (
                         reloc.offset as usize,
-                        move |buf: &mut ByteCursor, writer: &mut LenCounter, cx: &mut Self| {
+                        move |reader: &mut ByteCursor, writer: &mut LenCounter, cx: &mut Self| {
                             // Write relocation type.
                             cx.buf.push(reloc.ty as u8);
 
-                            // Write relocation index
+                            // Write relocation offset
                             cx.buf.write_var_u32(writer.0 as u32);
 
-                            // Write relocation offset
-                            cx.buf.write_var_u32(reloc.offset);
+                            // Write relocation index
+                            cx.buf.write_var_u32(reloc.index);
 
                             // Write relocation addend
                             if let Some(addend) = reloc.addend {
                                 cx.buf.write_var_i32(addend);
                             }
 
+                            // Sanity check
+                            debug_assert_eq!(
+                                reloc
+                                    .ty
+                                    .rewrite_kind()
+                                    .read(&mut reader.clone())
+                                    .unwrap()
+                                    .as_u32(),
+                                relocation_values[reloc.index as usize]
+                                    .wrapping_add(reloc.addend.unwrap_or(0) as u32),
+                            );
+
                             reloc
                                 .ty
                                 .rewrite_kind()
                                 .as_zeroed()
-                                .rewrite(buf, writer, cx)
+                                .rewrite(reader, writer, cx)
                                 .unwrap();
 
                             Ok(())
@@ -129,7 +146,7 @@ impl WasmallWriter {
                 &mut (),
                 relocations
                     .iter()
-                    .map(|(reloc, _)| (reloc.offset as usize, reloc.ty.rewrite_kind().as_zeroed())),
+                    .map(|reloc| (reloc.offset as usize, reloc.ty.rewrite_kind().as_zeroed())),
             )
             .unwrap();
 
@@ -142,14 +159,14 @@ impl WasmallWriter {
 
             // Write count
             let byte_size = len_of(|c| {
-                for (_, v) in relocations {
+                for v in relocation_values {
                     c.write_var_u32(*v);
                 }
             });
             self.buf.write_var_u32(byte_size as u32);
 
             // Write values
-            for (_, v) in relocations {
+            for v in relocation_values {
                 self.buf.write_var_u32(*v);
             }
 
@@ -295,22 +312,31 @@ impl<'a> WasmallModSegBlob<'a> {
     }
 
     pub fn write(&self, blob: &WasmallBlob<'_>, out: &mut Vec<u8>) -> anyhow::Result<()> {
-        let (reloc_values_len, reloc_values) = self.reloc_values().pre_validated()?;
+        // Collect the relocation values needed for this blob
+        let mut reloc_values = Vec::new();
 
-        anyhow::ensure!(reloc_values_len == blob.relocation_count as usize);
+        for reloc in self.reloc_values() {
+            reloc_values.push(reloc?);
+        }
+
+        // Validate each relocation entry.
+        for reloc in blob.relocations() {
+            anyhow::ensure!((reloc?.index as usize) < reloc_values.len());
+        }
 
         rewrite_relocated(
             blob.data,
             out,
             &mut (),
-            blob.relocations().zip(reloc_values).map(|(reloc, val)| {
-                let reloc = reloc.unwrap();
+            blob.relocations().map(|reloc| {
+                let reloc = reloc.unwrap(); // relocations are pre-validated
+
+                let val = reloc_values[reloc.index as usize]
+                    .wrapping_add(reloc.addend.unwrap_or(0) as u32);
+
                 (
                     reloc.offset as usize,
-                    reloc
-                        .ty
-                        .rewrite_kind()
-                        .with_value(val.wrapping_add(reloc.addend.unwrap_or(0) as u32)),
+                    reloc.ty.rewrite_kind().with_value(val),
                 )
             }),
         )?;
@@ -321,7 +347,6 @@ impl<'a> WasmallModSegBlob<'a> {
 // Blob
 #[derive(Debug, Clone)]
 pub struct WasmallBlob<'a> {
-    relocation_count: u32,
     relocations: &'a [u8],
     data: &'a [u8],
 }
@@ -347,11 +372,7 @@ impl<'a> ByteParse<'a> for WasmallBlob<'a> {
 
         let data = buf.0;
 
-        Ok(Self {
-            relocation_count,
-            relocations,
-            data,
-        })
+        Ok(Self { relocations, data })
     }
 }
 

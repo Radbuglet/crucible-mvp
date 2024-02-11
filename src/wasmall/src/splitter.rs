@@ -115,6 +115,11 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                 Payload::CodeSectionStart { range, count, .. } => {
                     let section_start = range.start;
 
+                    assert_eq!(
+                        ByteCursor(&src[section_start..]).read_var_u32().unwrap(),
+                        *count
+                    );
+
                     // Write section header verbatim
                     writer.push_verbatim::<anyhow::Result<_>>(|sink| {
                         // Write section ID
@@ -176,11 +181,12 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                         // Transform the blob's globally-indexed relocations into locally-indexed
                         // relocations for the `WasmallWriter`.
                         let mut local_relocations = Vec::new();
+                        let mut local_relocation_values = Vec::new();
                         {
-                            let mut global_to_local_sym_and_value_map =
-                                <FxHashMap<u32, (u32, u32)>>::default();
-
-                            let mut local_sym_gen = 0;
+                            // Map global symbol indexes to their blob-local index. Note that a global
+                            // symbol may be assigned to multiple different blob-local indices over
+                            // the course of a blob because, sometimes, the relocation system lies.
+                            let mut global_to_local_sym_map = <FxHashMap<u32, usize>>::default();
 
                             for reloc in relocations {
                                 // Determine the value this relocation takes on.
@@ -190,52 +196,51 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                                     .read(&mut ByteCursor(
                                         &entry_data[(reloc.offset - entry_start) as usize..],
                                     ))?
-                                    .as_u32_offset(reloc.addend.unwrap_or(0));
+                                    // Undo the addend.
+                                    .as_u32_neg_offset(reloc.addend.unwrap_or(0));
 
-                                // Determine whether we can use the old local symbol, generating a new
-                                // local symbol if not.
-                                let local_sym =
-                                    match global_to_local_sym_and_value_map.entry(reloc.index) {
-                                        hash_map::Entry::Occupied(entry) => {
-                                            let entry = entry.into_mut();
+                                // Determine whether we can use the old local symbol, generating a
+                                // new local symbol if not.
+                                let local_sym = match global_to_local_sym_map.entry(reloc.index) {
+                                    hash_map::Entry::Occupied(entry) => {
+                                        let entry = entry.into_mut();
+                                        let entry_value = local_relocation_values[*entry];
 
-                                            if reloc_value != entry.1 {
-                                                *entry = (local_sym_gen, reloc_value);
-                                                local_sym_gen += 1;
-                                            }
-
-                                            entry.0
+                                        if reloc_value != entry_value {
+                                            *entry = local_relocation_values.len();
+                                            local_relocation_values.push(reloc_value);
                                         }
-                                        hash_map::Entry::Vacant(entry) => {
-                                            let local_sym = local_sym_gen;
-                                            local_sym_gen += 1;
-                                            entry.insert((local_sym, reloc_value));
-                                            local_sym
-                                        }
-                                    };
 
-                                local_relocations.push((
-                                    RelocEntry {
-                                        offset: reloc.offset - entry_start,
-                                        index: local_sym,
-                                        ..*reloc
-                                    },
-                                    reloc_value,
-                                ));
+                                        *entry
+                                    }
+                                    hash_map::Entry::Vacant(entry) => {
+                                        let entry_idx = local_relocation_values.len();
+                                        entry.insert(entry_idx);
+                                        local_relocation_values.push(reloc_value);
+                                        entry_idx
+                                    }
+                                };
+
+                                let local_sym = u32::try_from(local_sym).unwrap();
+
+                                local_relocations.push(RelocEntry {
+                                    offset: reloc.offset - entry_start,
+                                    index: local_sym,
+                                    ..*reloc
+                                });
                             }
                         }
 
                         // Complete the blob
-                        writer.push_blob(&local_relocations, entry_data);
+                        writer.push_blob(&local_relocations, &local_relocation_values, entry_data);
                     }
                 }
                 // TODO: Handle data segments as well
                 payload => {
-                    if let Some((section_id, section_range)) = payload
-                        .as_section()
-                        // Don't include custom sections since our runtime isn't going to use them
-                        // whatsoever.
-                        .filter(|_| !matches!(payload, Payload::CustomSection(_)))
+                    if let Some((section_id, section_range)) = payload.as_section()
+                    // Don't include custom sections since our runtime isn't going to use them
+                    // whatsoever.
+                    // .filter(|_| !matches!(payload, Payload::CustomSection(_)))
                     {
                         writer.push_verbatim::<anyhow::Result<_>>(|sink| {
                             // Write section ID

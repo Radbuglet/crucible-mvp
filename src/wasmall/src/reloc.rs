@@ -167,8 +167,8 @@ pub fn rewrite_relocated<W: BufWriter, C>(
         writer.extend(&buf[buf_cursor..reloc_start]);
 
         // Push the new relocation bytes.
-        let reloc_end =
-            reloc_start + buf.try_count_bytes_read(|c| rewriter.rewrite(c, writer, cx))?;
+        let reloc_end = reloc_start
+            + buf[reloc_start..].try_count_bytes_read(|c| rewriter.rewrite(c, writer, cx))?;
 
         // Bump the `buf_cursor`
         buf_cursor = reloc_end;
@@ -245,7 +245,7 @@ impl ScalarRewrite {
         }
     }
 
-    pub fn as_u32_offset(self, addend: i32) -> u32 {
+    pub fn as_u32_neg_offset(self, addend: i32) -> u32 {
         self.as_u32().wrapping_add_signed(addend.wrapping_neg())
     }
 

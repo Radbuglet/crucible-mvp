@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    std::io::stdout().write_all(&code)?;
+    std::io::stdout().write_all(&writer)?;
 
     Ok(())
 }
