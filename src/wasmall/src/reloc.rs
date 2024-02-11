@@ -220,7 +220,7 @@ impl ScalarRewriteKind {
         }
     }
 
-    pub fn as_zeroed(self) -> ScalarRewrite {
+    pub fn with_zeroed(self) -> ScalarRewrite {
         self.with_value(0)
     }
 }
@@ -263,8 +263,9 @@ impl ScalarRewrite {
         writer: &mut impl BufWriter,
         val: u32,
     ) -> anyhow::Result<()> {
-        buf.read_var_u32()?;
-        writer.write_var_u32(val);
+        // N.B. relocation values are always full width in the LLVM spec.
+        buf.read_var_u32_full()?;
+        writer.write_var_u32_full(val);
         Ok(())
     }
 
@@ -273,8 +274,9 @@ impl ScalarRewrite {
         writer: &mut impl BufWriter,
         val: i32,
     ) -> anyhow::Result<()> {
-        buf.read_var_i32()?;
-        writer.write_var_i32(val);
+        // N.B. relocation values are always full width in the LLVM spec.
+        buf.read_var_i32_full()?;
+        writer.write_var_i32_full(val);
         Ok(())
     }
 

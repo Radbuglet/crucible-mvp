@@ -7,5 +7,5 @@ build-guest:
 
 roundtrip:
 	just analyze > private/one.wasm
-	xxd private/one.wasm > private/one.txt
-	xxd target/wasm32-wasi/debug/example-guest.wasm > private/two.txt
+	wasm2wat target/wasm32-wasi/debug/example-guest.wasm > private/two.wat
+	wasm2wat private/one.wasm > private/one.wat

@@ -128,7 +128,7 @@ impl WasmallWriter {
                             reloc
                                 .ty
                                 .rewrite_kind()
-                                .as_zeroed()
+                                .with_zeroed()
                                 .rewrite(reader, writer, cx)
                                 .unwrap();
 
@@ -146,7 +146,7 @@ impl WasmallWriter {
                 &mut (),
                 relocations
                     .iter()
-                    .map(|reloc| (reloc.offset as usize, reloc.ty.rewrite_kind().as_zeroed())),
+                    .map(|reloc| (reloc.offset as usize, reloc.ty.rewrite_kind().with_zeroed())),
             )
             .unwrap();
 
@@ -322,6 +322,22 @@ impl<'a> WasmallModSegBlob<'a> {
         // Validate each relocation entry.
         for reloc in blob.relocations() {
             anyhow::ensure!((reloc?.index as usize) < reloc_values.len());
+        }
+
+        // Sanity checks
+        for reloc in blob.relocations() {
+            let reloc = reloc.unwrap();
+
+            // Sanity check
+            debug_assert_eq!(
+                reloc
+                    .ty
+                    .rewrite_kind()
+                    .read(&mut ByteCursor(&blob.data[reloc.offset as usize..]))
+                    .unwrap()
+                    .as_u32(),
+                0,
+            );
         }
 
         rewrite_relocated(

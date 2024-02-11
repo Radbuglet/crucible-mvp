@@ -371,6 +371,37 @@ impl<'a> ByteCursor<'a> {
             _ => unreachable!(),
         }
     }
+
+    //
+
+    pub fn read_expecting_width<R>(
+        &mut self,
+        width: usize,
+        f: impl FnOnce(&mut Self) -> anyhow::Result<R>,
+    ) -> anyhow::Result<R> {
+        self.lookahead(|c| {
+            let start = c.0.len();
+            let res = f(c);
+            anyhow::ensure!(start - c.0.len() == width);
+            res
+        })
+    }
+
+    pub fn read_var_u32_full(&mut self) -> anyhow::Result<u32> {
+        self.read_expecting_width(5, Self::read_var_u32)
+    }
+
+    pub fn read_var_i32_full(&mut self) -> anyhow::Result<i32> {
+        self.read_expecting_width(5, Self::read_var_i32)
+    }
+
+    pub fn read_var_u64_full(&mut self) -> anyhow::Result<u64> {
+        self.read_expecting_width(10, Self::read_var_u64)
+    }
+
+    pub fn read_var_i64_full(&mut self) -> anyhow::Result<i64> {
+        self.read_expecting_width(10, Self::read_var_i64)
+    }
 }
 
 // ByteSliceExt
@@ -538,28 +569,75 @@ pub trait Leb128WriteExt: BufWriter {
         self.extend(&v.to_le_bytes());
     }
 
-    fn write_var_u32(&mut self, v: u32) {
+    fn write_leb_zero_extended(&mut self, data: &mut [u8], width: Option<usize>) {
+        if width.is_some_and(|width| data.len() < width) {
+            *data.last_mut().unwrap() |= 0x80;
+            self.extend(data);
+
+            let extra = width.unwrap() - data.len();
+
+            for i in 1..=extra {
+                self.push(if i == extra { 0 } else { 0x80 });
+            }
+        } else {
+            self.extend(data);
+        }
+    }
+
+    fn write_var_u32_with_width(&mut self, v: u32, min_width: Option<usize>) {
         let mut buf = [0u8; 5];
         let written = leb128::write::unsigned(&mut &mut buf[..], v.into()).unwrap();
-        self.extend(&buf[0..written])
+        self.write_leb_zero_extended(&mut buf[0..written], min_width);
+    }
+
+    fn write_var_i32_with_width(&mut self, v: i32, min_width: Option<usize>) {
+        let mut buf = [0u8; 5];
+        let written = leb128::write::signed(&mut &mut buf[..], v.into()).unwrap();
+        self.write_leb_zero_extended(&mut buf[0..written], min_width);
+    }
+
+    fn write_var_u64_with_width(&mut self, v: u64, min_width: Option<usize>) {
+        let mut buf = [0u8; 10];
+        let written = leb128::write::unsigned(&mut &mut buf[..], v).unwrap();
+        self.write_leb_zero_extended(&mut buf[0..written], min_width);
+    }
+
+    fn write_var_i64_with_width(&mut self, v: i64, min_width: Option<usize>) {
+        let mut buf = [0u8; 10];
+        let written = leb128::write::signed(&mut &mut buf[..], v).unwrap();
+        self.write_leb_zero_extended(&mut buf[0..written], min_width);
+    }
+
+    fn write_var_u32(&mut self, v: u32) {
+        self.write_var_u32_with_width(v, None);
     }
 
     fn write_var_i32(&mut self, v: i32) {
-        let mut buf = [0u8; 5];
-        let written = leb128::write::signed(&mut &mut buf[..], v.into()).unwrap();
-        self.extend(&buf[0..written])
+        self.write_var_i32_with_width(v, None);
     }
 
     fn write_var_u64(&mut self, v: u64) {
-        let mut buf = [0u8; 10];
-        let written = leb128::write::unsigned(&mut &mut buf[..], v).unwrap();
-        self.extend(&buf[0..written])
+        self.write_var_u64_with_width(v, None);
     }
 
     fn write_var_i64(&mut self, v: i64) {
-        let mut buf = [0u8; 10];
-        let written = leb128::write::signed(&mut &mut buf[..], v).unwrap();
-        self.extend(&buf[0..written])
+        self.write_var_i64_with_width(v, None);
+    }
+
+    fn write_var_u32_full(&mut self, v: u32) {
+        self.write_var_u32_with_width(v, Some(5));
+    }
+
+    fn write_var_i32_full(&mut self, v: i32) {
+        self.write_var_i32_with_width(v, Some(5));
+    }
+
+    fn write_var_u64_full(&mut self, v: u64) {
+        self.write_var_u64_with_width(v, Some(10));
+    }
+
+    fn write_var_i64_full(&mut self, v: i64) {
+        self.write_var_i64_with_width(v, Some(10));
     }
 }
 

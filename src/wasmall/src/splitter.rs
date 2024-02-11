@@ -237,10 +237,11 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                 }
                 // TODO: Handle data segments as well
                 payload => {
-                    if let Some((section_id, section_range)) = payload.as_section()
-                    // Don't include custom sections since our runtime isn't going to use them
-                    // whatsoever.
-                    // .filter(|_| !matches!(payload, Payload::CustomSection(_)))
+                    if let Some((section_id, section_range)) = payload
+                        .as_section()
+                        // Don't include custom sections since our runtime isn't going to use them
+                        // whatsoever.
+                        .filter(|_| !matches!(payload, Payload::CustomSection(_)))
                     {
                         writer.push_verbatim::<anyhow::Result<_>>(|sink| {
                             // Write section ID
