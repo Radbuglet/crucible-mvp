@@ -10,7 +10,13 @@ use crate::{
     util::{len_of, ByteCursor, ByteParse, Leb128WriteExt, OffsetTracker, VecExt},
 };
 
-pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
+#[derive(Debug)]
+pub struct SplitModuleResult {
+    pub archive: WasmallArchive,
+    pub bytes_truncated: usize,
+}
+
+pub fn split_module(src: &[u8]) -> anyhow::Result<SplitModuleResult> {
     let _guard = OffsetTracker::new(src);
 
     // Collect all payloads ahead of time so we don't have to deal with the somewhat arcane parser API.
@@ -94,6 +100,7 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
 
     // Run a second pass to create both the blobs and the split module.
     let mut writer = WasmallWriter::default();
+    let mut bytes_truncated = 0;
     {
         // Write the magic number
         writer.push_verbatim(|sink| {
@@ -237,26 +244,26 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
                 }
                 // TODO: Handle data segments as well
                 payload => {
-                    if let Some((section_id, section_range)) = payload
-                        .as_section()
-                        // Don't include custom sections since our runtime isn't going to use them
-                        // whatsoever.
-                        .filter(|_| !matches!(payload, Payload::CustomSection(_)))
-                    {
-                        writer.push_verbatim::<anyhow::Result<_>>(|sink| {
-                            // Write section ID
-                            sink.push(section_id);
+                    if let Some((section_id, section_range)) = payload.as_section() {
+                        if matches!(payload, Payload::CustomSection(_)) {
+                            bytes_truncated += section_range.len();
+                        } else {
+                            writer.push_verbatim::<anyhow::Result<_>>(|sink| {
+                                // Write section ID
+                                sink.push(section_id);
 
-                            // Write section length
-                            sink.write_var_u32(
-                                u32::try_from(section_range.len()).context("section is too big")?,
-                            );
+                                // Write section length
+                                sink.write_var_u32(
+                                    u32::try_from(section_range.len())
+                                        .context("section is too big")?,
+                                );
 
-                            // Write section data
-                            sink.extend_from_slice(&src[section_range]);
+                                // Write section data
+                                sink.extend_from_slice(&src[section_range]);
 
-                            Ok(())
-                        })?;
+                                Ok(())
+                            })?;
+                        }
                     }
                 }
             }
@@ -267,5 +274,8 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<WasmallArchive> {
         }
     }
 
-    Ok(writer.finish())
+    Ok(SplitModuleResult {
+        archive: writer.finish(),
+        bytes_truncated,
+    })
 }

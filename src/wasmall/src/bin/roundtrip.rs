@@ -10,7 +10,7 @@ use wasmall::{
 fn main() -> anyhow::Result<()> {
     // Compress it
     let code = std::fs::read(std::env::args().nth(1).context("missing path")?)?;
-    let archive = split_module(&code)?;
+    let archive = split_module(&code)?.archive;
 
     // Decompress it
     let _guard = OffsetTracker::new(&archive.out_buf);
