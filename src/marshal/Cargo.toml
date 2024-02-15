@@ -1,0 +1,12 @@
+[package]
+name = "crt-marshal"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytemuck = { version = "1.14.3", features = ["derive"] }
+wasmtime = { version = "17.0.1", default-features = false, optional = true }
+
+[features]
+wasmtime = ["dep:wasmtime"]
+default = ["wasmtime"]

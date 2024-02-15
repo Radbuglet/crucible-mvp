@@ -1,3 +1,6 @@
+help:
+	just --list
+
 build-guest:
 	cargo rustc --target wasm32-wasi -p example-guest -- -C link-args="-r" -C link-dead-code
 
