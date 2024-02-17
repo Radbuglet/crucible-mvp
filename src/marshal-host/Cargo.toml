@@ -1,0 +1,12 @@
+[package]
+name = "crt-marshal-host"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.79"
+bytemuck = "1.14.3"
+crt-marshal = { version = "0.1.0", path = "../marshal", features = [
+    "wasmtime",
+] }
+wasmtime = "17.0.1"

@@ -9,4 +9,3 @@ wasmtime = { version = "17.0.1", default-features = false, optional = true }
 
 [features]
 wasmtime = ["dep:wasmtime"]
-default = ["wasmtime"]

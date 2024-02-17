@@ -4,6 +4,81 @@ use core::{fmt, marker::PhantomData, ptr::NonNull};
 
 use bytemuck::{Pod, Zeroable};
 
+// === WasmPrimitive === //
+
+mod wasm_primitive {
+    #[cfg(feature = "wasmtime")]
+    pub trait Sealed: wasmtime::WasmTy {}
+
+    #[cfg(not(feature = "wasmtime"))]
+    pub trait Sealed {}
+}
+
+pub trait WasmPrimitive: wasm_primitive::Sealed {}
+
+macro_rules! impl_wasm_primitive {
+    ($($ty:ty),*$(,)?) => {$(
+        impl wasm_primitive::Sealed for $ty {}
+        impl WasmPrimitive for $ty {}
+    )*};
+}
+
+impl_wasm_primitive!(u32, i32, u64, i64, f32, f64);
+
+// === MarshaledArgTy === //
+
+pub trait MarshaledArgTy: Sized {
+    type Prim: WasmPrimitive;
+
+    fn into_prim(me: Self) -> Self::Prim;
+
+    fn from_prim(me: Self::Prim) -> Option<Self>;
+}
+
+macro_rules! impl_func_ty {
+    ($($ty:ty => $prim:ty),*$(,)?) => {$(
+        impl MarshaledArgTy for $ty {
+            type Prim = $prim;
+
+            fn into_prim(me: Self) -> Self::Prim {
+                me.into()
+            }
+
+            fn from_prim(me: Self::Prim) -> Option<Self> {
+                Self::try_from(me).ok()
+            }
+        }
+    )*};
+}
+
+impl_func_ty!(
+    u8 => u32,
+    u16 => u32,
+    u32 => u32,
+    i8 => i32,
+    i16 => i32,
+    i32 => i32,
+    u64 => u64,
+    i64 => i64,
+    char => u32,
+);
+
+impl MarshaledArgTy for bool {
+    type Prim = u32;
+
+    fn into_prim(me: Self) -> Self::Prim {
+        me as u32
+    }
+
+    fn from_prim(me: Self::Prim) -> Option<Self> {
+        match me {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+}
+
 // === Little Endian Types === //
 
 macro_rules! define_le {
@@ -90,6 +165,18 @@ macro_rules! define_le {
                 value.get()
             }
         }
+
+        impl MarshaledArgTy for $name {
+            type Prim = <$ty as MarshaledArgTy>::Prim;
+
+            fn into_prim(me: Self) -> Self::Prim {
+                <$ty>::into_prim(me.get())
+            }
+
+            fn from_prim(me: Self::Prim) -> Option<Self> {
+                <$ty>::from_prim(me).map(Self::new)
+            }
+        }
     )*};
 }
 
@@ -131,6 +218,21 @@ impl<T> Clone for WasmPtr<T> {
     }
 }
 
+impl<T> MarshaledArgTy for WasmPtr<T> {
+    type Prim = u32;
+
+    fn into_prim(me: Self) -> Self::Prim {
+        MarshaledArgTy::into_prim(me.addr)
+    }
+
+    fn from_prim(me: Self::Prim) -> Option<Self> {
+        MarshaledArgTy::from_prim(me).map(|addr| Self {
+            _ty: PhantomData,
+            addr,
+        })
+    }
+}
+
 unsafe impl<T> Pod for WasmPtr<T> {}
 unsafe impl<T> Zeroable for WasmPtr<T> {}
 
@@ -157,6 +259,30 @@ impl<T> Clone for WasmSlice<T> {
     }
 }
 
+#[derive(Copy, Clone, Pod, Zeroable)]
+#[repr(C)]
+struct WasmSliceRaw(u32, u32);
+
+impl<T> MarshaledArgTy for WasmSlice<T> {
+    type Prim = u64;
+
+    fn into_prim(me: Self) -> Self::Prim {
+        bytemuck::cast(WasmSliceRaw(me.base.addr.get(), me.len.get()))
+    }
+
+    fn from_prim(me: Self::Prim) -> Option<Self> {
+        let WasmSliceRaw(base, len) = bytemuck::cast::<_, WasmSliceRaw>(me);
+
+        Some(Self {
+            base: WasmPtr {
+                _ty: PhantomData,
+                addr: LeU32::new(base),
+            },
+            len: LeU32::new(len),
+        })
+    }
+}
+
 unsafe impl<T: 'static> Pod for WasmSlice<T> {}
 unsafe impl<T: 'static> Zeroable for WasmSlice<T> {}
 
@@ -164,6 +290,18 @@ unsafe impl<T: 'static> Zeroable for WasmSlice<T> {}
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 #[repr(C)]
 pub struct WasmStr(pub WasmSlice<u8>);
+
+impl MarshaledArgTy for WasmStr {
+    type Prim = u64;
+
+    fn into_prim(me: Self) -> Self::Prim {
+        WasmSlice::into_prim(me.0)
+    }
+
+    fn from_prim(me: Self::Prim) -> Option<Self> {
+        Some(WasmStr(WasmSlice::from_prim(me).unwrap()))
+    }
+}
 
 // === Guest Constructors === //
 
