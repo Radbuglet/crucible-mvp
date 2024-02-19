@@ -4,6 +4,20 @@ use core::{fmt, marker::PhantomData, ptr::NonNull};
 
 use bytemuck::{Pod, Zeroable};
 
+// === Helpers === //
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! impl_variadic {
+    ($target:path) => {
+        impl_variadic!($target; V1 V2 V3 V4 V5 V6 V7 V8 V9 V10 V11 V12);
+    };
+    ($target:path; $($first:ident $($remaining:ident)*)?) => {
+        $target!($($first $($remaining)*)?);
+        $(impl_variadic!($target; $($remaining)*);)?
+    };
+}
+
 // === WasmPrimitive === //
 
 mod wasm_primitive {
@@ -25,9 +39,35 @@ macro_rules! impl_wasm_primitive {
 
 impl_wasm_primitive!(u32, i32, u64, i64, f32, f64);
 
-// === MarshaledArgTy === //
+// === WasmPrimitiveList === //
 
-pub trait MarshaledArgTy: Sized {
+mod wasm_primitive_list {
+    #[cfg(feature = "wasmtime")]
+    pub trait Sealed: wasmtime::WasmRet {}
+
+    #[cfg(not(feature = "wasmtime"))]
+    pub trait Sealed {}
+}
+
+pub trait WasmPrimitiveList: wasm_primitive_list::Sealed {}
+
+impl<T: WasmPrimitive> wasm_primitive_list::Sealed for T {}
+
+impl<T: WasmPrimitive> WasmPrimitiveList for T {}
+
+macro_rules! impl_wasm_primitive_list {
+    ($($para:ident)*) => {
+        impl<$($para: WasmPrimitive),*> wasm_primitive_list::Sealed for ($($para,)*) {}
+
+        impl<$($para: WasmPrimitive),*> WasmPrimitiveList for ($($para,)*) {}
+    };
+}
+
+impl_variadic!(impl_wasm_primitive_list);
+
+// === MarshaledTy === //
+
+pub trait MarshaledTy: Sized {
     type Prim: WasmPrimitive;
 
     fn into_prim(me: Self) -> Self::Prim;
@@ -37,7 +77,7 @@ pub trait MarshaledArgTy: Sized {
 
 macro_rules! impl_func_ty {
     ($($ty:ty => $prim:ty),*$(,)?) => {$(
-        impl MarshaledArgTy for $ty {
+        impl MarshaledTy for $ty {
             type Prim = $prim;
 
             fn into_prim(me: Self) -> Self::Prim {
@@ -63,7 +103,7 @@ impl_func_ty!(
     char => u32,
 );
 
-impl MarshaledArgTy for bool {
+impl MarshaledTy for bool {
     type Prim = u32;
 
     fn into_prim(me: Self) -> Self::Prim {
@@ -78,6 +118,48 @@ impl MarshaledArgTy for bool {
         }
     }
 }
+
+// === MarshaledResults === //
+
+pub trait MarshaledResults: Sized {
+    type Prims: WasmPrimitiveList;
+
+    fn into_prims(me: Self) -> Self::Prims;
+
+    fn from_prims(me: Self::Prims) -> Option<Self>;
+}
+
+impl<T: MarshaledTy> MarshaledResults for T {
+    type Prims = T::Prim;
+
+    fn into_prims(me: Self) -> Self::Prims {
+        T::into_prim(me)
+    }
+
+    fn from_prims(me: Self::Prims) -> Option<Self> {
+        T::from_prim(me)
+    }
+}
+
+macro_rules! impl_marshaled_res_ty {
+    ($($para:ident)*) => {
+        impl<$($para: MarshaledTy,)*> MarshaledResults for ($($para,)*) {
+            type Prims = ($(<$para as MarshaledTy>::Prim,)*);
+
+            #[allow(clippy::unused_unit, non_snake_case)]
+            fn into_prims(($($para,)*): Self) -> Self::Prims {
+                ( $(MarshaledTy::into_prim($para),)* )
+            }
+
+            #[allow(non_snake_case)]
+            fn from_prims(($($para,)*): Self::Prims) -> Option<Self> {
+                Some(( $(MarshaledTy::from_prim($para)?,)* ))
+            }
+        }
+    };
+}
+
+impl_variadic!(impl_marshaled_res_ty);
 
 // === Little Endian Types === //
 
@@ -166,8 +248,8 @@ macro_rules! define_le {
             }
         }
 
-        impl MarshaledArgTy for $name {
-            type Prim = <$ty as MarshaledArgTy>::Prim;
+        impl MarshaledTy for $name {
+            type Prim = <$ty as MarshaledTy>::Prim;
 
             fn into_prim(me: Self) -> Self::Prim {
                 <$ty>::into_prim(me.get())
@@ -218,15 +300,15 @@ impl<T> Clone for WasmPtr<T> {
     }
 }
 
-impl<T> MarshaledArgTy for WasmPtr<T> {
+impl<T> MarshaledTy for WasmPtr<T> {
     type Prim = u32;
 
     fn into_prim(me: Self) -> Self::Prim {
-        MarshaledArgTy::into_prim(me.addr)
+        MarshaledTy::into_prim(me.addr)
     }
 
     fn from_prim(me: Self::Prim) -> Option<Self> {
-        MarshaledArgTy::from_prim(me).map(|addr| Self {
+        MarshaledTy::from_prim(me).map(|addr| Self {
             _ty: PhantomData,
             addr,
         })
@@ -263,7 +345,7 @@ impl<T> Clone for WasmSlice<T> {
 #[repr(C)]
 struct WasmSliceRaw(u32, u32);
 
-impl<T> MarshaledArgTy for WasmSlice<T> {
+impl<T> MarshaledTy for WasmSlice<T> {
     type Prim = u64;
 
     fn into_prim(me: Self) -> Self::Prim {
@@ -291,7 +373,7 @@ unsafe impl<T: 'static> Zeroable for WasmSlice<T> {}
 #[repr(C)]
 pub struct WasmStr(pub WasmSlice<u8>);
 
-impl MarshaledArgTy for WasmStr {
+impl MarshaledTy for WasmStr {
     type Prim = u64;
 
     fn into_prim(me: Self) -> Self::Prim {
@@ -350,4 +432,34 @@ impl WasmStr {
     pub fn new_guest(ptr: *const str) -> Self {
         Self(WasmSlice::new_guest(ptr as *const [u8]))
     }
+}
+
+// === Generator === //
+
+#[macro_export]
+macro_rules! generate_guest_ffi {
+    (
+        $(
+            $(#[$fn_attr:meta])*
+            $vis:vis fn $module:literal.$fn_name:ident(
+                $($arg_name:ident: $arg_ty:ty),*
+                $(,)?
+            ) $( -> $res_ty:ty )?;
+        )*
+    ) => {$(
+        $(#[$fn_attr])*
+        $vis unsafe fn $fn_name($($arg_name: $arg_ty),*) $(-> $res_ty)? {
+            #[link(wasm_import_module = $module)]
+            extern "C" {
+                fn $fn_name(
+                    $($arg_name: <$arg_ty as $crate::MarshaledTy>::Prim),*
+                ) $(-> <$res_ty as $crate::MarshaledTy>::Prim)?;
+            }
+
+            $crate::MarshaledResults::from_prims($fn_name(
+                $($crate::MarshaledTy::into_prim($arg_name),)*
+            ))
+            .expect("failed to parse result")
+        }
+    )*};
 }

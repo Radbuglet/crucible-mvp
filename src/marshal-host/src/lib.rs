@@ -92,83 +92,82 @@ impl MemoryRead for [u8] {
 
 // === Function Parsing === //
 
-macro_rules! impl_variadic {
-    ($target:path) => {
-        impl_variadic!($target; V1 V2 V3 V4 V5 V6 V7 V8 V9 V10 V11 V12);
-    };
-    ($target:path; $($first:ident $($remaining:ident)*)?) => {
-        $target!($($first $($remaining)*)?);
-        $(impl_variadic!($target; $($remaining)*);)?
-    };
-}
-
+// CtxHasMainMemory
 pub trait CtxHasMainMemory: Sized {
     fn extract_main_memory<'a>(
         caller: &'a mut wasmtime::Caller<'_, Self>,
     ) -> (&'a mut [u8], &'a mut Self);
 }
 
-pub trait MarshaledResTy {
-    type Res: wasmtime::WasmRet;
-
-    fn to_normalized_res(self) -> anyhow::Result<Self::Res>;
-}
-
-macro_rules! impl_marshaled_res_ty {
-    ($($para:ident)*) => {
-        impl<$($para: MarshaledArgTy,)*> MarshaledResTy for ($($para,)*) {
-            type Res = ($($para::Prim,)*);
-
-            #[allow(clippy::unused_unit, non_snake_case)]
-            fn to_normalized_res(self) -> anyhow::Result<Self::Res> {
-                let ($($para,)*) = self;
-                Ok(($(MarshaledArgTy::into_prim($para),)*))
-            }
-        }
-
-        impl<$($para: MarshaledArgTy,)*> MarshaledResTy for anyhow::Result<($($para,)*)> {
-            type Res = ($($para::Prim,)*);
-
-            #[allow(clippy::unused_unit, non_snake_case)]
-            fn to_normalized_res(self) -> anyhow::Result<Self::Res> {
-                let ($($para,)*) = self?;
-                Ok(($(MarshaledArgTy::into_prim($para),)*))
-            }
-        }
-    };
-}
-
-impl_variadic!(impl_marshaled_res_ty);
-
-pub trait MarshaledFunc<C, Args, Ret>
-where
-    C: CtxHasMainMemory,
-    Ret: MarshaledResTy,
-{
-    fn wrap(self, store: impl wasmtime::AsContextMut<Data = C>) -> wasmtime::Func;
+// MarshaledFunc
+pub trait MarshaledFunc<T, Params, Results>: Sized {
+    fn make_func_inner(self) -> impl IntoAnyFunc<T>;
 }
 
 macro_rules! impl_func_ty {
     ($($ty:ident)*) => {
-        impl<C, F, Ret, $($ty: MarshaledArgTy,)*> MarshaledFunc<C, ($($ty,)*), Ret> for F
+        impl<T, F, Ret, $($ty: MarshaledTy,)*> MarshaledFunc<T, ($($ty,)*), Ret> for F
         where
-            C: CtxHasMainMemory,
-            Ret: MarshaledResTy,
-            F: 'static + Send + Sync + Fn(&mut C, &mut [u8], $($ty,)*) -> Ret,
+            T: 'static + CtxHasMainMemory,
+            Ret: MarshaledResults,
+            F: 'static + Send + Sync + Fn(&mut T, &mut [u8], $($ty,)*) -> anyhow::Result<Ret>,
         {
             #[allow(non_snake_case)]
-            fn wrap(self, store: impl wasmtime::AsContextMut<Data = C>) -> wasmtime::Func {
-                wasmtime::Func::wrap(
-                    store,
-                    move |mut caller: wasmtime::Caller<'_, C>, $($ty: <$ty as MarshaledArgTy>::Prim,)*| {
-                        let (memory, cx) = C::extract_main_memory(&mut caller);
-                        self(cx, memory, $(<$ty>::from_prim($ty).context("failed to parse argument")?,)*)
-                            .to_normalized_res()
-                    },
-                )
+            fn make_func_inner(self) -> impl IntoAnyFunc<T> {
+                make_into_any_func(move |mut caller: wasmtime::Caller<'_, T>, $($ty: <$ty as MarshaledTy>::Prim,)*| {
+                    let (memory, cx) = T::extract_main_memory(&mut caller);
+                    self(cx, memory, $(<$ty>::from_prim($ty).context("failed to parse argument")?,)*)
+                        .map(MarshaledResults::into_prims)
+                })
             }
         }
     };
 }
 
 impl_variadic!(impl_func_ty);
+
+// IntoAnyFunc
+pub trait IntoAnyFunc<T> {
+    type Inner: wasmtime::IntoFunc<T, Self::Params, Self::Results>;
+    type Params;
+    type Results;
+
+    fn into_inner(self) -> Self::Inner;
+}
+
+pub fn make_into_any_func<F, T, Params, Results>(
+    f: F,
+) -> impl IntoAnyFunc<T, Params = Params, Results = Results>
+where
+    F: wasmtime::IntoFunc<T, Params, Results>,
+{
+    struct Inner<F, M>(F, PhantomData<fn(M) -> M>);
+
+    impl<F, Context, Params, Results> IntoAnyFunc<Context> for Inner<F, (Context, Params, Results)>
+    where
+        F: wasmtime::IntoFunc<Context, Params, Results>,
+    {
+        type Inner = F;
+        type Params = Params;
+        type Results = Results;
+
+        fn into_inner(self) -> Self::Inner {
+            self.0
+        }
+    }
+
+    Inner(f, PhantomData)
+}
+
+// `bind_to_linker`
+pub fn bind_to_linker<'l, F, T, Params, Results>(
+    linker: &'l mut wasmtime::Linker<T>,
+    module: &str,
+    name: &str,
+    func: F,
+) -> anyhow::Result<&'l mut wasmtime::Linker<T>>
+where
+    F: MarshaledFunc<T, Params, Results>,
+{
+    linker.func_wrap(module, name, func.make_func_inner().into_inner())
+}
