@@ -43,7 +43,7 @@ impl_wasm_primitive!(u32, i32, u64, i64, f32, f64);
 
 mod wasm_primitive_list {
     #[cfg(feature = "wasmtime")]
-    pub trait Sealed: wasmtime::WasmRet {}
+    pub trait Sealed: wasmtime::WasmRet + wasmtime::WasmResults + wasmtime::WasmParams {}
 
     #[cfg(not(feature = "wasmtime"))]
     pub trait Sealed {}
@@ -121,7 +121,7 @@ impl MarshaledTy for bool {
 
 // === MarshaledResults === //
 
-pub trait MarshaledResults: Sized {
+pub trait MarshaledTyList: Sized {
     type Prims: WasmPrimitiveList;
 
     fn into_prims(me: Self) -> Self::Prims;
@@ -129,7 +129,7 @@ pub trait MarshaledResults: Sized {
     fn from_prims(me: Self::Prims) -> Option<Self>;
 }
 
-impl<T: MarshaledTy> MarshaledResults for T {
+impl<T: MarshaledTy> MarshaledTyList for T {
     type Prims = T::Prim;
 
     fn into_prims(me: Self) -> Self::Prims {
@@ -143,7 +143,7 @@ impl<T: MarshaledTy> MarshaledResults for T {
 
 macro_rules! impl_marshaled_res_ty {
     ($($para:ident)*) => {
-        impl<$($para: MarshaledTy,)*> MarshaledResults for ($($para,)*) {
+        impl<$($para: MarshaledTy,)*> MarshaledTyList for ($($para,)*) {
             type Prims = ($(<$para as MarshaledTy>::Prim,)*);
 
             #[allow(clippy::unused_unit, non_snake_case)]

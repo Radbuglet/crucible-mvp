@@ -90,74 +90,76 @@ impl MemoryRead for [u8] {
     }
 }
 
-// === Function Parsing === //
+pub trait MemoryWrite: MemoryRead {
+    fn as_slice_mut(&mut self) -> &mut [u8];
+
+    fn load_range_mut(&mut self, base: u32, len: u32) -> anyhow::Result<&mut [u8]> {
+        let mem_len = self.as_slice().len();
+        self.as_slice_mut()
+            .get_mut(base as usize..)
+            .and_then(|s| s.get_mut(..len as usize))
+            .with_context(|| {
+                format!("failed to read memory range from {base} to {len} (memory size: {mem_len})")
+            })
+    }
+
+    fn write_range_mut(&mut self, base: u32, data: &[u8]) -> anyhow::Result<()> {
+        self.load_range_mut(base, u32::try_from(data.len()).context("slice is too big")?)?
+            .copy_from_slice(data);
+
+        Ok(())
+    }
+}
+
+impl MemoryWrite for [u8] {
+    fn as_slice_mut(&mut self) -> &mut [u8] {
+        self
+    }
+}
+
+// === Host-Side Function Handling === //
 
 // CtxHasMainMemory
 pub trait CtxHasMainMemory: Sized {
-    fn extract_main_memory<'a>(
-        caller: &'a mut wasmtime::Caller<'_, Self>,
-    ) -> (&'a mut [u8], &'a mut Self);
+    #[rustfmt::skip]
+    fn extract_main_memory<'a>(caller: &'a mut wasmtime::Caller<'_, Self>) ->
+        (&'a mut [u8], &'a mut Self);
 }
 
-// MarshaledFunc
-pub trait MarshaledFunc<T, Params, Results>: Sized {
-    fn make_func_inner(self) -> impl IntoAnyFunc<T>;
+// HostSideMarshaledFunc
+pub trait HostSideMarshaledFunc<T, Params, Results>: Sized {
+    type PrimParams<'a>;
+    type PrimResults;
+
+    #[rustfmt::skip]
+    fn wrap_host(self) ->
+        impl for<'a> wasmtime::IntoFunc<T, Self::PrimParams<'a>, Self::PrimResults>;
 }
 
 macro_rules! impl_func_ty {
     ($($ty:ident)*) => {
-        impl<T, F, Ret, $($ty: MarshaledTy,)*> MarshaledFunc<T, ($($ty,)*), Ret> for F
+        impl<T, F, Ret, $($ty: MarshaledTy,)*> HostSideMarshaledFunc<T, ($($ty,)*), Ret> for F
         where
             T: 'static + CtxHasMainMemory,
-            Ret: MarshaledResults,
+            Ret: MarshaledTyList,
             F: 'static + Send + Sync + Fn(&mut T, &mut [u8], $($ty,)*) -> anyhow::Result<Ret>,
         {
+            type PrimParams<'a> = (wasmtime::Caller<'a, T>, $(<$ty as MarshaledTy>::Prim,)*);
+            type PrimResults = anyhow::Result<Ret::Prims>;
+
             #[allow(non_snake_case)]
-            fn make_func_inner(self) -> impl IntoAnyFunc<T> {
-                make_into_any_func(move |mut caller: wasmtime::Caller<'_, T>, $($ty: <$ty as MarshaledTy>::Prim,)*| {
+            fn wrap_host(self) -> impl for<'a> wasmtime::IntoFunc<T, Self::PrimParams<'a>, Self::PrimResults> {
+                move |mut caller: wasmtime::Caller<'_, T>, $($ty: <$ty as MarshaledTy>::Prim,)*| {
                     let (memory, cx) = T::extract_main_memory(&mut caller);
                     self(cx, memory, $(<$ty>::from_prim($ty).context("failed to parse argument")?,)*)
-                        .map(MarshaledResults::into_prims)
-                })
+                        .map(MarshaledTyList::into_prims)
+                }
             }
         }
     };
 }
 
 impl_variadic!(impl_func_ty);
-
-// IntoAnyFunc
-pub trait IntoAnyFunc<T> {
-    type Inner: wasmtime::IntoFunc<T, Self::Params, Self::Results>;
-    type Params;
-    type Results;
-
-    fn into_inner(self) -> Self::Inner;
-}
-
-pub fn make_into_any_func<F, T, Params, Results>(
-    f: F,
-) -> impl IntoAnyFunc<T, Params = Params, Results = Results>
-where
-    F: wasmtime::IntoFunc<T, Params, Results>,
-{
-    struct Inner<F, M>(F, PhantomData<fn(M) -> M>);
-
-    impl<F, Context, Params, Results> IntoAnyFunc<Context> for Inner<F, (Context, Params, Results)>
-    where
-        F: wasmtime::IntoFunc<Context, Params, Results>,
-    {
-        type Inner = F;
-        type Params = Params;
-        type Results = Results;
-
-        fn into_inner(self) -> Self::Inner {
-            self.0
-        }
-    }
-
-    Inner(f, PhantomData)
-}
 
 // `bind_to_linker`
 pub fn bind_to_linker<'l, F, T, Params, Results>(
@@ -167,7 +169,25 @@ pub fn bind_to_linker<'l, F, T, Params, Results>(
     func: F,
 ) -> anyhow::Result<&'l mut wasmtime::Linker<T>>
 where
-    F: MarshaledFunc<T, Params, Results>,
+    F: HostSideMarshaledFunc<T, Params, Results>,
 {
-    linker.func_wrap(module, name, func.make_func_inner().into_inner())
+    linker.func_wrap(module, name, func.wrap_host())
+}
+
+// === Guest-Side Function Handling === //
+
+pub type MarshaledTypedFunc<A, R> =
+    wasmtime::TypedFunc<<A as MarshaledTyList>::Prims, <R as MarshaledTyList>::Prims>;
+
+pub trait MarshaledTypedFuncExt<A: MarshaledTyList, R: MarshaledTyList> {
+    fn call_marshaled(&self, store: impl wasmtime::AsContextMut, args: A) -> anyhow::Result<R>;
+}
+
+impl<A: MarshaledTyList, R: MarshaledTyList> MarshaledTypedFuncExt<A, R>
+    for MarshaledTypedFunc<A, R>
+{
+    fn call_marshaled(&self, store: impl wasmtime::AsContextMut, args: A) -> anyhow::Result<R> {
+        R::from_prims(self.call(store, A::into_prims(args))?)
+            .context("failed to deserialize results")
+    }
 }
