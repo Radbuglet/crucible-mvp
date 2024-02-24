@@ -1,6 +1,14 @@
 #![no_std]
+#![allow(clippy::missing_safety_doc)]
 
-use core::{fmt, marker::PhantomData, ptr::NonNull};
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+use core::{
+    fmt,
+    marker::PhantomData,
+    ptr::{self, NonNull},
+};
 
 use bytemuck::{Pod, Zeroable};
 
@@ -119,7 +127,7 @@ impl MarshaledTy for bool {
     }
 }
 
-// === MarshaledResults === //
+// === MarshaledTyList === //
 
 pub trait MarshaledTyList: Sized {
     type Prims: WasmPrimitiveList;
@@ -410,12 +418,34 @@ fn usize_to_u32(v: usize) -> u32 {
     }
 }
 
+fn u32_to_usize(v: u32) -> usize {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = v;
+        panic!("attempted to call guest function on non-guest platform");
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        v as usize
+    }
+}
+
 impl<T> WasmPtr<T> {
     pub fn new_guest(ptr: *const T) -> Self {
         Self {
             _ty: PhantomData,
             addr: LeU32::new(usize_to_u32(ptr as usize)),
         }
+    }
+
+    pub fn into_guest(self) -> *mut T {
+        u32_to_usize(self.addr.get()) as *mut T
+    }
+
+    #[cfg(feature = "alloc")]
+    pub unsafe fn into_guest_box(self) -> alloc::boxed::Box<T> {
+        alloc::boxed::Box::from_raw(self.into_guest())
     }
 }
 
@@ -426,11 +456,33 @@ impl<T> WasmSlice<T> {
             len: LeU32::new(usize_to_u32(slice_len(ptr))),
         }
     }
+
+    pub fn into_guest(self) -> *mut [T] {
+        ptr::slice_from_raw_parts_mut(self.base.into_guest(), u32_to_usize(self.len.get()))
+    }
+
+    #[cfg(feature = "alloc")]
+    pub unsafe fn into_guest_vec(self) -> alloc::vec::Vec<T> {
+        alloc::vec::Vec::from_raw_parts(
+            self.into_guest() as *mut T,
+            u32_to_usize(self.len.get()),
+            u32_to_usize(self.len.get()),
+        )
+    }
 }
 
 impl WasmStr {
     pub fn new_guest(ptr: *const str) -> Self {
         Self(WasmSlice::new_guest(ptr as *const [u8]))
+    }
+
+    pub fn into_guest(self) -> *mut [u8] {
+        self.0.into_guest()
+    }
+
+    #[cfg(feature = "alloc")]
+    pub unsafe fn into_guest_string(self) -> alloc::string::String {
+        alloc::string::String::from_utf8_unchecked(self.0.into_guest_vec())
     }
 }
 
@@ -456,7 +508,7 @@ macro_rules! generate_guest_ffi {
                 ) $(-> <$res_ty as $crate::MarshaledTy>::Prim)?;
             }
 
-            $crate::MarshaledResults::from_prims($fn_name(
+            $crate::MarshaledTyList::from_prims($fn_name(
                 $($crate::MarshaledTy::into_prim($arg_name),)*
             ))
             .expect("failed to parse result")
