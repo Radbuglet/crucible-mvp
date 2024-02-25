@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{any::type_name, marker::PhantomData};
 
 use anyhow::Context;
@@ -24,6 +25,23 @@ pub const fn size_of_32<T>() -> u32 {
     }
 
     <SizeOf<T>>::SIZE
+}
+
+pub const fn align_of_32<T>() -> u32 {
+    struct AlignOf<T>(PhantomData<fn() -> T>);
+
+    impl<T> AlignOf<T> {
+        const SIZE: u32 = {
+            let size = std::mem::align_of::<T>();
+            if size > u32::MAX as usize {
+                panic!("structure is too big");
+            }
+
+            size as u32
+        };
+    }
+
+    <AlignOf<T>>::SIZE
 }
 
 pub trait MemoryRead {
@@ -109,6 +127,37 @@ pub trait MemoryWrite: MemoryRead {
 
         Ok(())
     }
+
+    fn write_struct<T: Pod>(&mut self, base: WasmPtr<T>, data: &T) -> anyhow::Result<()> {
+        self.write_range_mut(base.addr.get(), bytemuck::bytes_of(data))
+    }
+
+    fn write_slice<'a, T: Pod>(
+        &mut self,
+        base: WasmPtr<T>,
+        items: impl IntoIterator<Item = &'a T>,
+    ) -> anyhow::Result<u32> {
+        let mut offset = base.addr.get();
+        let mut count = 0;
+
+        for item in items {
+            self.write_struct(
+                WasmPtr {
+                    _ty: PhantomData,
+                    addr: offset.into(),
+                },
+                item,
+            )?;
+
+            offset = offset
+                .checked_add(size_of_32::<T>())
+                .context("wrote too many elements into memory")?;
+
+            count += 1;
+        }
+
+        Ok(count)
+    }
 }
 
 impl MemoryWrite for [u8] {
@@ -118,13 +167,6 @@ impl MemoryWrite for [u8] {
 }
 
 // === Host-Side Function Handling === //
-
-// CtxHasMainMemory
-pub trait CtxHasMainMemory: Sized {
-    #[rustfmt::skip]
-    fn extract_main_memory<'a>(caller: &'a mut wasmtime::Caller<'_, Self>) ->
-        (&'a mut [u8], &'a mut Self);
-}
 
 // HostSideMarshaledFunc
 pub trait HostSideMarshaledFunc<T, Params, Results>: Sized {
@@ -140,18 +182,17 @@ macro_rules! impl_func_ty {
     ($($ty:ident)*) => {
         impl<T, F, Ret, $($ty: MarshaledTy,)*> HostSideMarshaledFunc<T, ($($ty,)*), Ret> for F
         where
-            T: 'static + CtxHasMainMemory,
+            T: 'static,
             Ret: MarshaledTyList,
-            F: 'static + Send + Sync + Fn(&mut T, &mut [u8], $($ty,)*) -> anyhow::Result<Ret>,
+            F: 'static + Send + Sync + Fn(wasmtime::Caller<'_, T>, $($ty,)*) -> anyhow::Result<Ret>,
         {
             type PrimParams<'a> = (wasmtime::Caller<'a, T>, $(<$ty as MarshaledTy>::Prim,)*);
             type PrimResults = anyhow::Result<Ret::Prims>;
 
             #[allow(non_snake_case)]
             fn wrap_host(self) -> impl for<'a> wasmtime::IntoFunc<T, Self::PrimParams<'a>, Self::PrimResults> {
-                move |mut caller: wasmtime::Caller<'_, T>, $($ty: <$ty as MarshaledTy>::Prim,)*| {
-                    let (memory, cx) = T::extract_main_memory(&mut caller);
-                    self(cx, memory, $(<$ty>::from_prim($ty).context("failed to parse argument")?,)*)
+                move |caller: wasmtime::Caller<'_, T>, $($ty: <$ty as MarshaledTy>::Prim,)*| {
+                    self(caller, $(<$ty>::from_prim($ty).context("failed to parse argument")?,)*)
                         .map(MarshaledTyList::into_prims)
                 }
             }
@@ -176,18 +217,104 @@ where
 
 // === Guest-Side Function Handling === //
 
-pub type MarshaledTypedFunc<A, R> =
-    wasmtime::TypedFunc<<A as MarshaledTyList>::Prims, <R as MarshaledTyList>::Prims>;
+pub struct MarshaledTypedFunc<A, R>(pub wasmtime::TypedFunc<A::Prims, R::Prims>)
+where
+    A: MarshaledTyList,
+    R: MarshaledTyList;
 
-pub trait MarshaledTypedFuncExt<A: MarshaledTyList, R: MarshaledTyList> {
-    fn call_marshaled(&self, store: impl wasmtime::AsContextMut, args: A) -> anyhow::Result<R>;
+impl<A, R> Copy for MarshaledTypedFunc<A, R>
+where
+    A: MarshaledTyList,
+    R: MarshaledTyList,
+{
 }
 
-impl<A: MarshaledTyList, R: MarshaledTyList> MarshaledTypedFuncExt<A, R>
-    for MarshaledTypedFunc<A, R>
+impl<A, R> Clone for MarshaledTypedFunc<A, R>
+where
+    A: MarshaledTyList,
+    R: MarshaledTyList,
 {
-    fn call_marshaled(&self, store: impl wasmtime::AsContextMut, args: A) -> anyhow::Result<R> {
-        R::from_prims(self.call(store, A::into_prims(args))?)
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<A, R> MarshaledTypedFunc<A, R>
+where
+    A: MarshaledTyList,
+    R: MarshaledTyList,
+{
+    pub fn call(&self, store: impl wasmtime::AsContextMut, args: A) -> anyhow::Result<R> {
+        R::from_prims(self.0.call(store, A::into_prims(args))?)
             .context("failed to deserialize results")
     }
+}
+
+// === StoreHasMemory === //
+
+pub trait StoreHasMemory {
+    fn main_memory(&self) -> wasmtime::Memory;
+
+    fn alloc_func(&self) -> MarshaledTypedFunc<(u32, u32), WasmPtr<()>>;
+}
+
+pub trait ContextMemoryExt: Sized + wasmtime::AsContextMut<Data = Self::Data_> {
+    type Data_: StoreHasMemory;
+
+    fn main_memory(&mut self) -> (&mut [u8], &mut Self::Data_) {
+        let memory = self.as_context_mut().data().main_memory();
+        memory.data_and_store_mut(self)
+    }
+
+    fn alloc(&mut self, size: u32, align: u32) -> anyhow::Result<WasmPtr<()>> {
+        let alloc = self.as_context_mut().data().alloc_func();
+        alloc.call(self, (size, align))
+    }
+
+    fn alloc_struct<T: Pod>(&mut self, value: &T) -> anyhow::Result<WasmPtr<T>> {
+        let ptr = self
+            .alloc(size_of_32::<T>(), align_of_32::<T>())
+            .map(|v| WasmPtr::<T> {
+                _ty: PhantomData,
+                addr: v.addr,
+            })?;
+
+        let (memory, _) = self.main_memory();
+        memory.write_struct(ptr, value)?;
+        Ok(ptr)
+    }
+
+    fn alloc_slice<'a, T: Pod>(
+        &mut self,
+        values: impl ExactSizeIterator<Item = &'a T>,
+    ) -> anyhow::Result<WasmSlice<T>> {
+        let len = u32::try_from(values.len()).context("too many elements in slice")?;
+        let size = size_of_32::<T>()
+            .checked_mul(len)
+            .context("Slice is too big")?;
+
+        let base = self.alloc(size, align_of_32::<T>()).map(|v| WasmPtr::<T> {
+            _ty: PhantomData,
+            addr: v.addr,
+        })?;
+
+        let (memory, _) = self.main_memory();
+        memory.write_slice(base, values)?;
+
+        Ok(WasmSlice {
+            base,
+            len: len.into(),
+        })
+    }
+
+    fn alloc_str(&mut self, data: &str) -> anyhow::Result<WasmStr> {
+        self.alloc_slice(data.as_bytes().iter()).map(WasmStr)
+    }
+}
+
+impl<T: wasmtime::AsContextMut> ContextMemoryExt for T
+where
+    T::Data: StoreHasMemory,
+{
+    type Data_ = T::Data;
 }
