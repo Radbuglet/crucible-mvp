@@ -1,4 +1,3 @@
-use core::fmt;
 use std::{any::type_name, marker::PhantomData};
 
 use anyhow::Context;
@@ -7,6 +6,93 @@ use bytemuck::Pod;
 // === Re-Exports === //
 
 pub use crt_marshal::*;
+
+// === HostMarshaledTy === //
+
+pub trait HostMarshaledTy: Sized {
+    type HostPrim: wasmtime::WasmTy;
+
+    fn into_host_prim(me: Self) -> Self::HostPrim;
+
+    fn from_host_prim(me: Self::HostPrim) -> Option<Self>;
+}
+
+macro_rules! impl_host_marshal_from_guest {
+    () => {
+        type HostPrim = <Self as GuestMarshaledTy>::GuestPrim;
+
+        fn into_host_prim(me: Self) -> Self::HostPrim {
+            Self::into_guest_prim(me)
+        }
+
+        fn from_host_prim(me: Self::HostPrim) -> Option<Self> {
+            Self::from_guest_prim(me)
+        }
+    };
+}
+
+macro_rules! derive_host_marshal_from_guest {
+    ($($ty:ty),*$(,)?) => {$(
+        impl HostMarshaledTy for $ty {
+            impl_host_marshal_from_guest!();
+        }
+    )*};
+}
+
+derive_host_marshal_from_guest! {
+    u8, u16, u32, i8, i16, i32, u64, i64, char, bool, LeI16, LeU16, LeI32, LeU32, LeI64, LeU64,
+    WasmStr
+}
+
+impl<T> HostMarshaledTy for WasmPtr<T> {
+    impl_host_marshal_from_guest!();
+}
+
+impl<T> HostMarshaledTy for WasmSlice<T> {
+    impl_host_marshal_from_guest!();
+}
+
+// === HostMarshaledTyList === //
+
+pub trait HostMarshaledTyList: Sized {
+    type HostPrims: wasmtime::WasmRet + wasmtime::WasmResults + wasmtime::WasmParams;
+
+    fn into_host_prims(me: Self) -> Self::HostPrims;
+
+    fn from_host_prims(me: Self::HostPrims) -> Option<Self>;
+}
+
+impl<T: HostMarshaledTy> HostMarshaledTyList for T {
+    type HostPrims = T::HostPrim;
+
+    fn into_host_prims(me: Self) -> Self::HostPrims {
+        T::into_host_prim(me)
+    }
+
+    fn from_host_prims(me: Self::HostPrims) -> Option<Self> {
+        T::from_host_prim(me)
+    }
+}
+
+macro_rules! impl_marshaled_res_ty {
+    ($($para:ident)*) => {
+        impl<$($para: HostMarshaledTy,)*> HostMarshaledTyList for ($($para,)*) {
+            type HostPrims = ($(<$para as HostMarshaledTy>::HostPrim,)*);
+
+            #[allow(clippy::unused_unit, non_snake_case)]
+            fn into_host_prims(($($para,)*): Self) -> Self::HostPrims {
+                ( $(HostMarshaledTy::into_host_prim($para),)* )
+            }
+
+            #[allow(non_snake_case)]
+            fn from_host_prims(($($para,)*): Self::HostPrims) -> Option<Self> {
+                Some(( $(HostMarshaledTy::from_host_prim($para)?,)* ))
+            }
+        }
+    };
+}
+
+impl_variadic!(impl_marshaled_res_ty);
 
 // === Heap Parsing === //
 
@@ -180,20 +266,20 @@ pub trait HostSideMarshaledFunc<T, Params, Results>: Sized {
 
 macro_rules! impl_func_ty {
     ($($ty:ident)*) => {
-        impl<T, F, Ret, $($ty: MarshaledTy,)*> HostSideMarshaledFunc<T, ($($ty,)*), Ret> for F
+        impl<T, F, Ret, $($ty: HostMarshaledTy,)*> HostSideMarshaledFunc<T, ($($ty,)*), Ret> for F
         where
             T: 'static,
-            Ret: MarshaledTyList,
+            Ret: HostMarshaledTyList,
             F: 'static + Send + Sync + Fn(wasmtime::Caller<'_, T>, $($ty,)*) -> anyhow::Result<Ret>,
         {
-            type PrimParams<'a> = (wasmtime::Caller<'a, T>, $(<$ty as MarshaledTy>::Prim,)*);
-            type PrimResults = anyhow::Result<Ret::Prims>;
+            type PrimParams<'a> = (wasmtime::Caller<'a, T>, $(<$ty as HostMarshaledTy>::HostPrim,)*);
+            type PrimResults = anyhow::Result<Ret::HostPrims>;
 
             #[allow(non_snake_case)]
             fn wrap_host(self) -> impl for<'a> wasmtime::IntoFunc<T, Self::PrimParams<'a>, Self::PrimResults> {
-                move |caller: wasmtime::Caller<'_, T>, $($ty: <$ty as MarshaledTy>::Prim,)*| {
-                    self(caller, $(<$ty>::from_prim($ty).context("failed to parse argument")?,)*)
-                        .map(MarshaledTyList::into_prims)
+                move |caller: wasmtime::Caller<'_, T>, $($ty: <$ty as HostMarshaledTy>::HostPrim,)*| {
+                    self(caller, $(<$ty>::from_host_prim($ty).context("failed to parse argument")?,)*)
+                        .map(HostMarshaledTyList::into_host_prims)
                 }
             }
         }
@@ -217,22 +303,22 @@ where
 
 // === Guest-Side Function Handling === //
 
-pub struct MarshaledTypedFunc<A, R>(pub wasmtime::TypedFunc<A::Prims, R::Prims>)
+pub struct MarshaledTypedFunc<A, R>(pub wasmtime::TypedFunc<A::HostPrims, R::HostPrims>)
 where
-    A: MarshaledTyList,
-    R: MarshaledTyList;
+    A: HostMarshaledTyList,
+    R: HostMarshaledTyList;
 
 impl<A, R> Copy for MarshaledTypedFunc<A, R>
 where
-    A: MarshaledTyList,
-    R: MarshaledTyList,
+    A: HostMarshaledTyList,
+    R: HostMarshaledTyList,
 {
 }
 
 impl<A, R> Clone for MarshaledTypedFunc<A, R>
 where
-    A: MarshaledTyList,
-    R: MarshaledTyList,
+    A: HostMarshaledTyList,
+    R: HostMarshaledTyList,
 {
     fn clone(&self) -> Self {
         *self
@@ -241,11 +327,11 @@ where
 
 impl<A, R> MarshaledTypedFunc<A, R>
 where
-    A: MarshaledTyList,
-    R: MarshaledTyList,
+    A: HostMarshaledTyList,
+    R: HostMarshaledTyList,
 {
     pub fn call(&self, store: impl wasmtime::AsContextMut, args: A) -> anyhow::Result<R> {
-        R::from_prims(self.0.call(store, A::into_prims(args))?)
+        R::from_host_prims(self.0.call(store, A::into_host_prims(args))?)
             .context("failed to deserialize results")
     }
 }
