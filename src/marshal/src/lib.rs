@@ -26,6 +26,37 @@ macro_rules! impl_variadic {
     };
 }
 
+// === ZstFn === //
+
+pub trait ZstFn<A>: Sized {
+    type Output;
+
+    unsafe fn call_static(args: A) -> Self::Output;
+}
+
+impl<A, R, F> ZstFn<A> for F
+where
+    F: 'static + Sized + Send + Sync + Fn(A) -> R,
+{
+    type Output = R;
+
+    unsafe fn call_static(args: A) -> Self::Output {
+        struct StaticValidation<F>(F);
+
+        impl<F> StaticValidation<F> {
+            const IS_VALID: bool = {
+                if core::mem::size_of::<F>() != 0 {
+                    panic!("must be ZST");
+                }
+                true
+            };
+        }
+        assert!(StaticValidation::<F>::IS_VALID);
+
+        NonNull::<F>::dangling().as_ref()(args)
+    }
+}
+
 // === GuestMarshaledTy === //
 
 pub trait GuestMarshaledTy: Sized {
@@ -79,6 +110,85 @@ impl GuestMarshaledTy for bool {
         }
     }
 }
+
+// === GuestMarshaledTyList === //
+
+pub trait GuestMarshaledTyList: Sized {
+    type PrimFunc<R>: Copy;
+    type GuestPrims;
+
+    fn wrap_prim_func<F, R>(f: F) -> Self::PrimFunc<R::GuestPrims>
+    where
+        F: ZstFn<Self, Output = R>,
+        R: GuestMarshaledTyList;
+
+    fn into_guest_prims(me: Self) -> Self::GuestPrims;
+
+    fn from_guest_prims(me: Self::GuestPrims) -> Option<Self>;
+}
+
+impl<T: GuestMarshaledTy> GuestMarshaledTyList for T {
+    type PrimFunc<R> = fn(T::GuestPrim) -> R;
+    type GuestPrims = T::GuestPrim;
+
+    fn wrap_prim_func<F, R>(f: F) -> Self::PrimFunc<R::GuestPrims>
+    where
+        F: ZstFn<Self, Output = R>,
+        R: GuestMarshaledTyList,
+    {
+        let _ = f;
+
+        |arg| {
+            let arg = T::from_guest_prim(arg).unwrap();
+            let res = unsafe { F::call_static(arg) };
+            R::into_guest_prims(res)
+        }
+    }
+
+    fn into_guest_prims(me: Self) -> Self::GuestPrims {
+        T::into_guest_prim(me)
+    }
+
+    fn from_guest_prims(me: Self::GuestPrims) -> Option<Self> {
+        T::from_guest_prim(me)
+    }
+}
+
+macro_rules! impl_marshaled_res_ty {
+    ($($para:ident)*) => {
+        impl<$($para: GuestMarshaledTy,)*> GuestMarshaledTyList for ($($para,)*) {
+            type PrimFunc<R> = fn($(<$para as GuestMarshaledTy>::GuestPrim,)*) -> R;
+            type GuestPrims = ($(<$para as GuestMarshaledTy>::GuestPrim,)*);
+
+            #[allow(non_snake_case)]
+            fn wrap_prim_func<F, R>(f: F) -> Self::PrimFunc<R::GuestPrims>
+            where
+                F: ZstFn<Self, Output = R>,
+                R: GuestMarshaledTyList,
+            {
+                let _ = f;
+
+                |$($para,)*| {
+                    let arg = Self::from_guest_prims(($($para,)*)).unwrap();
+                    let res = unsafe { F::call_static(arg) };
+                    R::into_guest_prims(res)
+                }
+            }
+
+            #[allow(clippy::unused_unit, non_snake_case)]
+            fn into_guest_prims(($($para,)*): Self) -> Self::GuestPrims {
+                ( $(GuestMarshaledTy::into_guest_prim($para),)* )
+            }
+
+            #[allow(non_snake_case)]
+            fn from_guest_prims(($($para,)*): Self::GuestPrims) -> Option<Self> {
+                Some(( $(GuestMarshaledTy::from_guest_prim($para)?,)* ))
+            }
+        }
+    };
+}
+
+impl_variadic!(impl_marshaled_res_ty);
 
 // === Little Endian Types === //
 
@@ -304,6 +414,55 @@ impl GuestMarshaledTy for WasmStr {
     }
 }
 
+// WasmFuncOnGuest
+pub struct WasmFuncOnGuest<A, R>(pub A::PrimFunc<R::GuestPrims>)
+where
+    A: GuestMarshaledTyList,
+    R: GuestMarshaledTyList;
+
+impl<A, R> WasmFuncOnGuest<A, R>
+where
+    A: GuestMarshaledTyList,
+    R: GuestMarshaledTyList,
+{
+    pub fn new_guest<F: ZstFn<A, Output = R>>(f: F) -> Self {
+        Self(A::wrap_prim_func(f))
+    }
+}
+
+impl<A, R> Copy for WasmFuncOnGuest<A, R>
+where
+    A: GuestMarshaledTyList,
+    R: GuestMarshaledTyList,
+{
+}
+
+impl<A, R> Clone for WasmFuncOnGuest<A, R>
+where
+    A: GuestMarshaledTyList,
+    R: GuestMarshaledTyList,
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<A, R> GuestMarshaledTy for WasmFuncOnGuest<A, R>
+where
+    A: GuestMarshaledTyList,
+    R: GuestMarshaledTyList,
+{
+    type GuestPrim = A::PrimFunc<R::GuestPrims>;
+
+    fn into_guest_prim(me: Self) -> Self::GuestPrim {
+        me.0
+    }
+
+    fn from_guest_prim(me: Self::GuestPrim) -> Option<Self> {
+        Some(Self(me))
+    }
+}
+
 // === Guest Constructors === //
 
 // ...as per the suggestion of LegionMammal978 (https://github.com/LegionMammal978). Thanks!
@@ -415,12 +574,12 @@ macro_rules! generate_guest_ffi {
             #[link(wasm_import_module = $module)]
             extern "C" {
                 fn $fn_name(
-                    $($arg_name: <$arg_ty as $crate::MarshaledTy>::Prim),*
-                ) $(-> <$res_ty as $crate::MarshaledTy>::Prim)?;
+                    $($arg_name: <$arg_ty as $crate::GuestMarshaledTy>::GuestPrim),*
+                ) $(-> <$res_ty as $crate::GuestMarshaledTy>::GuestPrim)?;
             }
 
-            $crate::MarshaledTyList::from_prims($fn_name(
-                $($crate::MarshaledTy::into_prim($arg_name),)*
+            $crate::GuestMarshaledTyList::from_guest_prims($fn_name(
+                $($crate::GuestMarshaledTy::into_guest_prim($arg_name),)*
             ))
             .expect("failed to parse result")
         }
