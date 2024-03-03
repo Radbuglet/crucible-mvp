@@ -415,7 +415,7 @@ impl GuestMarshaledTy for WasmStr {
 }
 
 // WasmFuncOnGuest
-pub struct WasmFuncOnGuest<A, R>(pub A::PrimFunc<R::GuestPrims>)
+pub struct WasmFuncOnGuest<A, R = ()>(pub A::PrimFunc<R::GuestPrims>)
 where
     A: GuestMarshaledTyList,
     R: GuestMarshaledTyList;

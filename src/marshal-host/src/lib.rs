@@ -9,11 +9,11 @@ pub use crt_marshal::*;
 
 // === HostMarshaledTy === //
 
-pub trait HostMarshaledTyBase: Sized {
+pub trait HostMarshaledTyBase: Sized + HostMarshaledTyListBase {
     type HostPrim: wasmtime::WasmTy;
 }
 
-pub trait HostMarshaledTy<D>: HostMarshaledTyBase {
+pub trait HostMarshaledTy<D>: HostMarshaledTyBase + HostMarshaledTyList<D> {
     fn into_host_prim(me: Self) -> Self::HostPrim;
 
     fn from_host_prim(
@@ -43,8 +43,37 @@ macro_rules! impl_host_marshal_from_guest {
     };
 }
 
+macro_rules! impl_host_list_base_from_host {
+    () => {
+        type HostPrims = <Self as HostMarshaledTyBase>::HostPrim;
+    };
+}
+
+macro_rules! impl_host_list_from_host {
+    ($data:ty) => {
+        fn into_host_prims(me: Self) -> Self::HostPrims {
+            <Self as HostMarshaledTy<$data>>::into_host_prim(me)
+        }
+
+        fn from_host_prims(
+            cx: impl wasmtime::AsContextMut<Data = $data>,
+            me: Self::HostPrims,
+        ) -> anyhow::Result<Self> {
+            <Self as HostMarshaledTy<$data>>::from_host_prim(cx, me)
+        }
+    };
+}
+
 macro_rules! derive_host_marshal_from_guest {
     ($($ty:ty),*$(,)?) => {$(
+        impl HostMarshaledTyListBase for $ty {
+            impl_host_list_base_from_host!();
+        }
+
+        impl<D> HostMarshaledTyList<D> for $ty {
+            impl_host_list_from_host!(D);
+        }
+
         impl HostMarshaledTyBase for $ty {
             impl_host_marshal_base_from_guest!();
         }
@@ -55,26 +84,32 @@ macro_rules! derive_host_marshal_from_guest {
     )*};
 }
 
+macro_rules! derive_host_marshal_from_guest_generic {
+    ($($ty:ident),*$(,)?) => {$(
+        impl<T> HostMarshaledTyListBase for $ty<T> {
+            impl_host_list_base_from_host!();
+        }
+
+        impl<D, T> HostMarshaledTyList<D> for $ty<T> {
+            impl_host_list_from_host!(D);
+        }
+
+        impl<T> HostMarshaledTyBase for $ty<T> {
+            impl_host_marshal_base_from_guest!();
+        }
+
+        impl<D, T> HostMarshaledTy<D> for $ty<T> {
+            impl_host_marshal_from_guest!(D);
+        }
+    )*};
+}
+
 derive_host_marshal_from_guest! {
     u8, u16, u32, i8, i16, i32, u64, i64, char, bool, LeI16, LeU16, LeI32, LeU32, LeI64, LeU64,
     WasmStr
 }
 
-impl<T> HostMarshaledTyBase for WasmPtr<T> {
-    impl_host_marshal_base_from_guest!();
-}
-
-impl<D, T> HostMarshaledTy<D> for WasmPtr<T> {
-    impl_host_marshal_from_guest!(D);
-}
-
-impl<T> HostMarshaledTyBase for WasmSlice<T> {
-    impl_host_marshal_base_from_guest!();
-}
-
-impl<D, T> HostMarshaledTy<D> for WasmSlice<T> {
-    impl_host_marshal_from_guest!(D);
-}
+derive_host_marshal_from_guest_generic!(WasmPtr, WasmSlice);
 
 // === HostMarshaledTyList === //
 
@@ -90,23 +125,6 @@ pub trait HostMarshaledTyList<D>: HostMarshaledTyListBase {
         me: Self::HostPrims,
     ) -> anyhow::Result<Self>;
 }
-
-impl<T: HostMarshaledTyBase> HostMarshaledTyListBase for T {
-    type HostPrims = T::HostPrim;
-}
-
-// impl<D, T: HostMarshaledTy<D>> HostMarshaledTyList<D> for T {
-//     fn into_host_prims(me: Self) -> Self::HostPrims {
-//         T::into_host_prim(me)
-//     }
-//
-//     fn from_host_prims(
-//         cx: impl wasmtime::AsContextMut<Data = D>,
-//         me: Self::HostPrims,
-//     ) -> anyhow::Result<Self> {
-//         T::from_host_prim(cx, me)
-//     }
-// }
 
 macro_rules! impl_marshaled_res_ty {
     ($($para:ident)*) => {
@@ -350,12 +368,12 @@ where
 
 // === Guest-Side Function Handling === //
 
-pub struct WasmFuncOnHost<A, R>
+pub struct WasmFuncOnHost<A, R = ()>
 where
     A: HostMarshaledTyListBase,
     R: HostMarshaledTyListBase,
 {
-    pub index: u32,
+    pub index: Option<u32>,
     pub func: wasmtime::TypedFunc<A::HostPrims, R::HostPrims>,
 }
 
@@ -381,6 +399,16 @@ where
     A: HostMarshaledTyListBase,
     R: HostMarshaledTyListBase,
 {
+    pub fn new_not_indexed(func: wasmtime::TypedFunc<A::HostPrims, R::HostPrims>) -> Self {
+        Self { index: None, func }
+    }
+}
+
+impl<A, R> WasmFuncOnHost<A, R>
+where
+    A: HostMarshaledTyListBase,
+    R: HostMarshaledTyListBase,
+{
     pub fn call<D>(
         &self,
         mut store: impl wasmtime::AsContextMut<Data = D>,
@@ -393,6 +421,23 @@ where
         let res = self.func.call(&mut store, A::into_host_prims(args))?;
         R::from_host_prims(&mut store, res).context("failed to deserialize results")
     }
+}
+
+impl<A, R> HostMarshaledTyListBase for WasmFuncOnHost<A, R>
+where
+    A: HostMarshaledTyListBase,
+    R: HostMarshaledTyListBase,
+{
+    impl_host_list_base_from_host!();
+}
+
+impl<D, A, R> HostMarshaledTyList<D> for WasmFuncOnHost<A, R>
+where
+    D: StoreHasTable,
+    A: HostMarshaledTyList<D>,
+    R: HostMarshaledTyList<D>,
+{
+    impl_host_list_from_host!(D);
 }
 
 impl<A, R> HostMarshaledTyBase for WasmFuncOnHost<A, R>
@@ -410,7 +455,7 @@ where
     R: HostMarshaledTyList<D>,
 {
     fn into_host_prim(me: Self) -> Self::HostPrim {
-        me.index
+        me.index.expect("attempted to marshal non-indexed function")
     }
 
     fn from_host_prim(
@@ -428,7 +473,7 @@ where
             .context("entry is not a `funcref`")?;
 
         Ok(Self {
-            index: me,
+            index: Some(me),
             func: func.typed(&cx).context("func has wrong type")?,
         })
     }
@@ -445,7 +490,7 @@ pub trait StoreHasTable {
 pub trait StoreHasMemory {
     fn main_memory(&self) -> wasmtime::Memory;
 
-    fn alloc_func(&self) -> WasmFuncOnHost<(u32, u32), (WasmPtr<()>,)>;
+    fn alloc_func(&self) -> WasmFuncOnHost<(u32, u32), WasmPtr<()>>;
 }
 
 pub trait ContextMemoryExt: Sized + wasmtime::AsContextMut<Data = Self::Data_> {
@@ -458,7 +503,7 @@ pub trait ContextMemoryExt: Sized + wasmtime::AsContextMut<Data = Self::Data_> {
 
     fn alloc(&mut self, size: u32, align: u32) -> anyhow::Result<WasmPtr<()>> {
         let alloc = self.as_context_mut().data().alloc_func();
-        alloc.call(self, (size, align)).map(|v| v.0)
+        alloc.call(self, (size, align))
     }
 
     fn alloc_struct<T: Pod>(&mut self, value: &T) -> anyhow::Result<WasmPtr<T>> {
@@ -481,7 +526,7 @@ pub trait ContextMemoryExt: Sized + wasmtime::AsContextMut<Data = Self::Data_> {
         let len = u32::try_from(values.len()).context("too many elements in slice")?;
         let size = size_of_32::<T>()
             .checked_mul(len)
-            .context("Slice is too big")?;
+            .context("slice is too big")?;
 
         let base = self.alloc(size, align_of_32::<T>()).map(|v| WasmPtr::<T> {
             _ty: PhantomData,
