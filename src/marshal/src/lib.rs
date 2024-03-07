@@ -13,10 +13,11 @@ use core::{
 
 use bytemuck::{Pod, Zeroable};
 
-// === Macro Re-Exports === //
+// === Macro Re-exports === //
 
-pub mod macro_internals {
-    pub use core::marker::PhantomData;
+#[doc(hidden)]
+pub mod macro_rexp {
+    pub use core::option::Option;
 }
 
 // === Helpers === //
@@ -115,6 +116,33 @@ pub trait MarshaledTy: Sized + 'static {
     fn into_prim(me: Self) -> Self::Prim;
 
     fn from_prim(me: Self::Prim) -> Option<Self>;
+}
+
+#[macro_export]
+macro_rules! forward_marshaled_ty {
+    ($ty:ty, get |$getter_me:pat_param $(,)?| $getter:expr, new |$ctor_me:pat_param $(,)?| $ctor:expr $(,)?) => {
+        type Prim = <$ty as $crate::MarshaledTy>::Prim;
+
+        fn into_prim($getter_me: Self) -> Self::Prim {
+            <$ty as $crate::MarshaledTy>::into_prim($getter)
+        }
+
+        fn from_prim(me: Self::Prim) -> $crate::macro_rexp::Option<Self> {
+            let $ctor_me = <$ty as $crate::MarshaledTy>::from_prim(me)?;
+            $ctor
+        }
+    };
+    ($ty:ty) => {
+        type Prim = <$ty as $crate::MarshaledTy>::Prim;
+
+        fn into_prim(me: Self) -> Self::Prim {
+            <$ty as $crate::MarshaledTy>::into_prim(me.0)
+        }
+
+        fn from_prim(me: Self::Prim) -> $crate::macro_rexp::Option<Self> {
+            <$ty as $crate::MarshaledTy>::from_prim(me).map(Self)
+        }
+    };
 }
 
 macro_rules! impl_func_ty {
@@ -328,15 +356,7 @@ macro_rules! define_le {
         }
 
         impl MarshaledTy for $name {
-            type Prim = <$ty as MarshaledTy>::Prim;
-
-            fn into_prim(me: Self) -> Self::Prim {
-                <$ty>::into_prim(me.get())
-            }
-
-            fn from_prim(me: Self::Prim) -> Option<Self> {
-                <$ty>::from_prim(me).map(Self::new)
-            }
+            forward_marshaled_ty!($ty, get |me| me.get(), new |prim| Some(Self::new(prim)));
         }
     )*};
 }
@@ -425,17 +445,17 @@ unsafe impl<T: 'static> Zeroable for WasmSlice<T> {}
 
 #[derive(Copy, Clone, Pod, Zeroable)]
 #[repr(C)]
-struct WasmSliceRaw(u32, u32);
+struct WasmSliceConverter(u32, u32);
 
 impl<T> MarshaledTy for WasmSlice<T> {
     type Prim = u64;
 
     fn into_prim(me: Self) -> Self::Prim {
-        bytemuck::cast(WasmSliceRaw(me.base.addr.get(), me.len.get()))
+        bytemuck::cast(WasmSliceConverter(me.base.addr.get(), me.len.get()))
     }
 
     fn from_prim(me: Self::Prim) -> Option<Self> {
-        let WasmSliceRaw(base, len) = bytemuck::cast::<_, WasmSliceRaw>(me);
+        let WasmSliceConverter(base, len) = bytemuck::cast::<_, WasmSliceConverter>(me);
 
         Some(Self {
             base: WasmPtr {
@@ -470,8 +490,15 @@ where
     A: MarshaledTyList,
     R: MarshaledTyList,
 {
-    pub _ty: PhantomData<(A, R)>,
-    pub addr: LeU32,
+    _ty: PhantomData<(A, R)>,
+    addr: WasmFuncAddr,
+}
+
+#[derive(Copy, Clone)]
+union WasmFuncAddr {
+    addr: LeU32,
+    #[cfg(target_arch = "wasm32")]
+    func: *const (),
 }
 
 impl<A, R> fmt::Debug for WasmFunc<A, R>
@@ -485,7 +512,7 @@ where
             "fn({}) -> {} @ {:X}",
             type_name::<A>(),
             type_name::<R>(),
-            self.addr.get(),
+            self.addr().get(),
         )
     }
 }
@@ -521,6 +548,23 @@ where
 {
 }
 
+impl<A, R> WasmFunc<A, R>
+where
+    A: MarshaledTyList,
+    R: MarshaledTyList,
+{
+    pub const fn new(addr: LeU32) -> Self {
+        Self {
+            _ty: PhantomData,
+            addr: WasmFuncAddr { addr },
+        }
+    }
+
+    pub fn addr(self) -> LeU32 {
+        unsafe { self.addr.addr }
+    }
+}
+
 impl<A, R> MarshaledTy for WasmFunc<A, R>
 where
     A: MarshaledTyList,
@@ -529,25 +573,24 @@ where
     type Prim = u32;
 
     fn into_prim(me: Self) -> Self::Prim {
-        me.addr.get()
+        me.addr().get()
     }
 
     fn from_prim(me: Self::Prim) -> Option<Self> {
         Some(Self {
             _ty: PhantomData,
-            addr: me.into(),
+            addr: WasmFuncAddr { addr: me.into() },
         })
     }
 }
 
-// === WasmWidePtr === //
-
-pub struct WasmWidePtr<M: 'static, T: 'static> {
+// WasmWidePtrRaw
+pub struct WasmWidePtrRaw<M: 'static, T: 'static = ()> {
     pub base: WasmPtr<T>,
     pub meta: WasmPtr<M>,
 }
 
-impl<M, T> fmt::Debug for WasmWidePtr<M, T> {
+impl<M, T> fmt::Debug for WasmWidePtrRaw<M, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WasmWidePtr")
             .field("base", &self.base)
@@ -556,30 +599,30 @@ impl<M, T> fmt::Debug for WasmWidePtr<M, T> {
     }
 }
 
-impl<M, T> Copy for WasmWidePtr<M, T> {}
+impl<M, T> Copy for WasmWidePtrRaw<M, T> {}
 
-impl<M, T> Clone for WasmWidePtr<M, T> {
+impl<M, T> Clone for WasmWidePtrRaw<M, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-unsafe impl<M, T> Pod for WasmWidePtr<M, T> {}
-unsafe impl<M, T> Zeroable for WasmWidePtr<M, T> {}
+unsafe impl<M, T> Pod for WasmWidePtrRaw<M, T> {}
+unsafe impl<M, T> Zeroable for WasmWidePtrRaw<M, T> {}
 
 #[derive(Copy, Clone, Pod, Zeroable)]
 #[repr(C)]
-struct WasmWidePtrRaw(u32, u32);
+struct WasmWidePtrConverter(u32, u32);
 
-impl<M, T> MarshaledTy for WasmWidePtr<M, T> {
+impl<M, T> MarshaledTy for WasmWidePtrRaw<M, T> {
     type Prim = u64;
 
     fn into_prim(me: Self) -> Self::Prim {
-        bytemuck::cast(WasmWidePtrRaw(me.base.addr.get(), me.meta.addr.get()))
+        bytemuck::cast(WasmWidePtrConverter(me.base.addr.get(), me.meta.addr.get()))
     }
 
     fn from_prim(me: Self::Prim) -> Option<Self> {
-        let WasmWidePtrRaw(base, meta) = bytemuck::cast::<_, WasmWidePtrRaw>(me);
+        let WasmWidePtrConverter(base, meta) = bytemuck::cast::<_, WasmWidePtrConverter>(me);
 
         Some(Self {
             base: WasmPtr {
@@ -591,6 +634,76 @@ impl<M, T> MarshaledTy for WasmWidePtr<M, T> {
                 addr: LeU32::new(meta),
             },
         })
+    }
+}
+
+// WasmDynamic
+pub struct WasmDynamic<T: WasmPointee>(pub WasmWidePtrRaw<WasmVTable<T::VTable>>);
+
+impl<T: WasmPointee> fmt::Debug for WasmDynamic<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WasmDynamic")
+            .field("base", &self.0.base)
+            .field("meta", &self.0.meta)
+            .finish()
+    }
+}
+
+impl<T: WasmPointee> Copy for WasmDynamic<T> {}
+
+impl<T: WasmPointee> Clone for WasmDynamic<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+unsafe impl<T: WasmPointee> Pod for WasmDynamic<T> {}
+unsafe impl<T: WasmPointee> Zeroable for WasmDynamic<T> {}
+
+pub trait WasmPointee: Sized + 'static {
+    type VTable: 'static;
+}
+
+pub trait WasmPointeeUnsize<V>: WasmPointee {
+    const TABLE: &'static WasmVTable<Self::VTable>;
+
+    fn into_ptr(value: V) -> WasmPtr<()>;
+}
+
+#[repr(C)]
+pub struct WasmVTable<T: 'static> {
+    pub dtor: WasmFunc<(WasmPtr<()>, WasmPtr<WasmVTable<T>>)>,
+    pub extra: T,
+}
+
+// === Dynamic Pointees === //
+
+pub type WasmBoxAny = WasmDynamic<WasmBoxAnyPointee>;
+
+#[non_exhaustive]
+pub struct WasmBoxAnyPointee;
+
+impl WasmPointee for WasmBoxAnyPointee {
+    type VTable = ();
+}
+
+#[cfg(feature = "alloc")]
+impl<V: 'static> WasmPointeeUnsize<alloc::boxed::Box<V>> for WasmBoxAnyPointee {
+    const TABLE: &'static WasmVTable<Self::VTable> = &WasmVTable {
+        dtor: {
+            generate_guest_export! {
+                fn dtor(ptr: WasmPtr<()>, meta: WasmPtr<WasmVTable<()>>) {
+                    unimplemented!()
+                }
+            }
+
+            dtor()
+        },
+        extra: (),
+    };
+
+    fn into_ptr(value: alloc::boxed::Box<V>) -> WasmPtr<()> {
+        WasmPtr::new_guest(alloc::boxed::Box::into_raw(value).cast::<()>())
     }
 }
 
@@ -693,10 +806,35 @@ where
     R: MarshaledTyList,
 {
     pub fn new_guest<F: ZstFn<A, Output = R>>(f: F) -> Self {
-        Self {
-            _ty: PhantomData,
-            addr: guest_usize_to_u32(A::wrap_prim_func_on_guest(f)).into(),
+        Self::new(guest_usize_to_u32(A::wrap_prim_func_on_guest(f)).into())
+    }
+
+    pub const fn new_guest_raw(f: *const ()) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = f;
+            panic!("attempted to call guest function on non-guest platform");
         }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self {
+                _ty: PhantomData,
+                addr: WasmFuncAddr { func: f },
+            }
+        }
+    }
+}
+
+impl<T: WasmPointee> WasmDynamic<T> {
+    pub fn new_guest<V>(value: V) -> Self
+    where
+        T: WasmPointeeUnsize<V>,
+    {
+        Self(WasmWidePtrRaw {
+            base: T::into_ptr(value),
+            meta: WasmPtr::new_guest(T::TABLE),
+        })
     }
 }
 
@@ -739,8 +877,7 @@ macro_rules! generate_guest_export {
         }
     )*) => {$(
         #[allow(unused_parens, unused)]
-        $vis fn $fn_name() -> WasmFunc<($($ty),*) $(, $res)?> {
-            #[no_mangle]
+        $vis const fn $fn_name() -> WasmFunc<($($ty),*) $(, $res)?> {
             $(#[$attr])*
             unsafe extern "C" fn $fn_name($($arg: <$ty as $crate::MarshaledTy>::Prim),*)
                 $(-> <$res as $crate::MarshaledTy>::Prim)?
@@ -754,10 +891,7 @@ macro_rules! generate_guest_export {
                 ))
             }
 
-            $crate::WasmFunc {
-                _ty: $crate::macro_internals::PhantomData,
-                addr: $crate::LeU32::new($crate::guest_usize_to_u32($fn_name as usize)),
-            }
+            $crate::WasmFunc::new_guest_raw($fn_name as *const ())
         }
     )*};
 }

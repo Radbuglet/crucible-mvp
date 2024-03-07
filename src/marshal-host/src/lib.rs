@@ -250,7 +250,7 @@ where
     ) -> anyhow::Result<Self> {
         let table = cx.as_context().data().func_table();
         let func = table
-            .get(&mut cx, idx.addr.get())
+            .get(&mut cx, idx.addr().get())
             .with_context(|| format!("failed to resolve table entry with index {idx:?}"))?;
 
         let func = func
