@@ -6,7 +6,6 @@ use bytemuck::Pod;
 // === Re-Exports === //
 
 pub use crt_marshal::*;
-use wasmtime::AsContextMut;
 
 // === Heap Parsing === //
 
@@ -90,15 +89,15 @@ pub trait MemoryRead {
     }
 
     fn load_struct<T: Pod>(&self, ptr: WasmPtr<T>) -> anyhow::Result<&T> {
-        self.load_struct_raw(ptr.addr.get())
+        self.load_struct_raw(ptr.addr().get())
     }
 
     fn load_slice<T: Pod>(&self, ptr: WasmSlice<T>) -> anyhow::Result<&[T]> {
-        self.load_slice_raw(ptr.base.addr.get(), ptr.len.get())
+        self.load_slice_raw(ptr.base.addr().get(), ptr.len.get())
     }
 
     fn load_str(&self, ptr: WasmStr) -> anyhow::Result<&str> {
-        self.load_str_raw(ptr.0.base.addr.get(), ptr.0.len.get())
+        self.load_str_raw(ptr.0.base.addr().get(), ptr.0.len.get())
     }
 }
 
@@ -129,7 +128,7 @@ pub trait MemoryWrite: MemoryRead {
     }
 
     fn write_struct<T: Pod>(&mut self, base: WasmPtr<T>, data: &T) -> anyhow::Result<()> {
-        self.write_range_mut(base.addr.get(), bytemuck::bytes_of(data))
+        self.write_range_mut(base.addr().get(), bytemuck::bytes_of(data))
     }
 
     fn write_slice<'a, T: Pod>(
@@ -137,17 +136,11 @@ pub trait MemoryWrite: MemoryRead {
         base: WasmPtr<T>,
         items: impl IntoIterator<Item = &'a T>,
     ) -> anyhow::Result<u32> {
-        let mut offset = base.addr.get();
+        let mut offset = base.addr().get();
         let mut count = 0;
 
         for item in items {
-            self.write_struct(
-                WasmPtr {
-                    _ty: PhantomData,
-                    addr: offset.into(),
-                },
-                item,
-            )?;
+            self.write_struct(WasmPtr::new(offset.into()), item)?;
 
             offset = offset
                 .checked_add(size_of_32::<T>())
@@ -245,7 +238,7 @@ where
     R: MarshaledTyList,
 {
     pub fn decode<T: StoreHasTable>(
-        mut cx: impl AsContextMut<Data = T>,
+        mut cx: impl wasmtime::AsContextMut<Data = T>,
         idx: WasmFunc<A, R>,
     ) -> anyhow::Result<Self> {
         let table = cx.as_context().data().func_table();
@@ -271,6 +264,40 @@ where
     }
 }
 
+// === WasmDynamic Extensions === //
+
+pub trait WasmDynamicExt {
+    type Vtable: 'static;
+
+    fn get_vtable<S>(self, mem: &impl MemoryRead) -> anyhow::Result<&Self::Vtable>
+    where
+        Self::Vtable: bytemuck::Pod;
+
+    fn run_dtor<S>(self, cx: impl wasmtime::AsContextMut<Data = S>) -> anyhow::Result<()>
+    where
+        S: StoreHasMemory + StoreHasTable;
+}
+
+impl<V: 'static> WasmDynamicExt for WasmDynamic<V> {
+    type Vtable = V;
+
+    fn get_vtable<S>(self, mem: &impl MemoryRead) -> anyhow::Result<&Self::Vtable>
+    where
+        Self::Vtable: bytemuck::Pod,
+    {
+        mem.load_struct(mem.load_struct(self.0.meta)?.vtable)
+    }
+
+    fn run_dtor<S>(self, mut cx: impl wasmtime::AsContextMut<Data = S>) -> anyhow::Result<()>
+    where
+        S: StoreHasMemory + StoreHasTable,
+    {
+        let dtor = cx.main_memory().load_struct(self.0.meta)?.dtor;
+        let dtor = WasmFuncRef::decode(&mut cx, dtor)?;
+        dtor.call(cx, (self.0.base, self.0.meta))
+    }
+}
+
 // === StoreHasTable === //
 
 pub trait StoreHasTable {
@@ -288,9 +315,13 @@ pub trait StoreHasMemory {
 pub trait ContextMemoryExt: Sized + wasmtime::AsContextMut<Data = Self::Data_> {
     type Data_: StoreHasMemory;
 
-    fn main_memory(&mut self) -> (&mut [u8], &mut Self::Data_) {
+    fn split_main_memory(&mut self) -> (&mut [u8], &mut Self::Data_) {
         let memory = self.as_context_mut().data().main_memory();
         memory.data_and_store_mut(self)
+    }
+
+    fn main_memory(&mut self) -> &mut [u8] {
+        self.split_main_memory().0
     }
 
     fn alloc(&mut self, size: u32, align: u32) -> anyhow::Result<WasmPtr<()>> {
@@ -301,12 +332,9 @@ pub trait ContextMemoryExt: Sized + wasmtime::AsContextMut<Data = Self::Data_> {
     fn alloc_struct<T: Pod>(&mut self, value: &T) -> anyhow::Result<WasmPtr<T>> {
         let ptr = self
             .alloc(size_of_32::<T>(), align_of_32::<T>())
-            .map(|v| WasmPtr::<T> {
-                _ty: PhantomData,
-                addr: v.addr,
-            })?;
+            .map(|v| WasmPtr::<T>::new(v.addr()))?;
 
-        let (memory, _) = self.main_memory();
+        let (memory, _) = self.split_main_memory();
         memory.write_struct(ptr, value)?;
         Ok(ptr)
     }
@@ -320,12 +348,11 @@ pub trait ContextMemoryExt: Sized + wasmtime::AsContextMut<Data = Self::Data_> {
             .checked_mul(len)
             .context("slice is too big")?;
 
-        let base = self.alloc(size, align_of_32::<T>()).map(|v| WasmPtr::<T> {
-            _ty: PhantomData,
-            addr: v.addr,
-        })?;
+        let base = self
+            .alloc(size, align_of_32::<T>())
+            .map(|v| WasmPtr::<T>::new(v.addr()))?;
 
-        let (memory, _) = self.main_memory();
+        let (memory, _) = self.split_main_memory();
         memory.write_slice(base, values)?;
 
         Ok(WasmSlice {
