@@ -287,6 +287,56 @@ macro_rules! impl_marshaled_res_ty {
 
 impl_variadic!(impl_marshaled_res_ty);
 
+// Extensible Type List
+pub trait ExtensibleMarshaledTyList: MarshaledTyList {
+    type PushFirst<T: MarshaledTy>: NonEmptyMarshaledTyList<FirstParam = T, Remainder = Self>;
+
+    fn push_on_first<T: MarshaledTy>(self, value: T) -> Self::PushFirst<T>;
+}
+
+macro_rules! impl_extensible_marshaled_ty_list {
+    () => {};  // (ignore empty argument lists)
+    ($_ignore:ident $($param:ident)*) => {
+        impl<$($param: MarshaledTy),*> ExtensibleMarshaledTyList for ($($param,)*) {
+            type PushFirst<T: MarshaledTy> = (T, $($param,)*);
+
+            #[allow(non_snake_case)]
+            fn push_on_first<T: MarshaledTy>(self, value: T) -> Self::PushFirst<T> {
+                let ($($param,)*) = self;
+                (value, $($param,)*)
+            }
+        }
+    };
+}
+
+impl_variadic!(impl_extensible_marshaled_ty_list);
+
+// Non-Empty
+pub trait NonEmptyMarshaledTyList: MarshaledTyList {
+    type FirstParam: MarshaledTy;
+    type Remainder: MarshaledTyList;
+
+    fn split_off_first(self) -> (Self::FirstParam, Self::Remainder);
+}
+
+macro_rules! impl_non_empty_marshaled_ty_list {
+    () => {};  // (ignore empty argument lists)
+    ($first:ident $($param:ident)*) => {
+        impl<$first: MarshaledTy $(, $param: MarshaledTy)*> NonEmptyMarshaledTyList for ($first, $($param,)*) {
+            type FirstParam = $first;
+            type Remainder = ($($param,)*);
+
+            #[allow(non_snake_case)]
+            fn split_off_first(self) -> (Self::FirstParam, Self::Remainder) {
+                let ($first, $($param,)*) = self;
+                ($first, ($($param,)*))
+            }
+        }
+    };
+}
+
+impl_variadic!(impl_non_empty_marshaled_ty_list);
+
 // === Little Endian Types === //
 
 macro_rules! define_le {
@@ -402,7 +452,7 @@ pub struct WasmPtr<T: 'static> {
 union WasmPtrAddr {
     addr: LeU32,
     #[cfg(target_arch = "wasm32")]
-    func: *const (),
+    ptr: *const (),
 }
 
 impl<T> fmt::Debug for WasmPtr<T> {
@@ -718,6 +768,7 @@ pub trait WasmUnsize<T>: Sized + 'static {
 
 // === WasmDynamic Impls === //
 
+// Containers
 impl<T> WasmContainer for &'_ T {
     fn into_raw(self) -> *mut () {
         self as *const T as *const () as *mut ()
@@ -749,19 +800,63 @@ impl<T> WasmContainer for alloc::boxed::Box<T> {
     }
 }
 
+// Unsizing targets
 impl<T> WasmUnsize<T> for () {
     const TABLE: &'static Self = &();
 }
 
-impl<A, R, F> WasmUnsize<F> for WasmFunc<A, R>
+pub type WasmDynamicFunc<A, R = ()> = WasmDynamic<WasmFuncDynamicVtable<A, R>>;
+
+#[repr(C)]
+pub struct WasmFuncDynamicVtable<A, R>(pub WasmFunc<A::PushFirst<WasmPtr<()>>, R>)
 where
-    A: MarshaledTyList,
+    A: ExtensibleMarshaledTyList,
+    R: MarshaledTyList;
+
+impl<A, R> Copy for WasmFuncDynamicVtable<A, R>
+where
+    A: ExtensibleMarshaledTyList,
     R: MarshaledTyList,
-    F: Send + Sync + Fn(A) -> R,
 {
-    const TABLE: &'static Self = &WasmFunc::<A, R>::new_guest(&|args| {
-        todo!();
-    });
+}
+
+impl<A, R> Clone for WasmFuncDynamicVtable<A, R>
+where
+    A: ExtensibleMarshaledTyList,
+    R: MarshaledTyList,
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+unsafe impl<A, R> Pod for WasmFuncDynamicVtable<A, R>
+where
+    A: ExtensibleMarshaledTyList,
+    R: MarshaledTyList,
+{
+}
+
+unsafe impl<A, R> Zeroable for WasmFuncDynamicVtable<A, R>
+where
+    A: ExtensibleMarshaledTyList,
+    R: MarshaledTyList,
+{
+}
+
+impl<A, R, F> WasmUnsize<F> for WasmFuncDynamicVtable<A, R>
+where
+    A: ExtensibleMarshaledTyList,
+    R: MarshaledTyList,
+    F: 'static + Send + Sync + Fn(A) -> R,
+{
+    const TABLE: &'static Self =
+        &WasmFuncDynamicVtable(WasmFunc::new_guest(&|args: A::PushFirst<WasmPtr<()>>| {
+            let (me, args) = args.split_off_first();
+            let func = unsafe { &*me.into_guest().cast::<F>() };
+
+            func(args)
+        }));
 }
 
 // === Guest Constructors === //
@@ -814,7 +909,7 @@ impl<T> WasmPtr<T> {
         {
             Self {
                 _ty: PhantomData,
-                addr: WasmPtrAddr { ptr },
+                addr: WasmPtrAddr { ptr: ptr.cast() },
             }
         }
     }
@@ -874,22 +969,6 @@ where
     pub const fn new_guest<F: ZstFn<A, Output = R>>(f: &'static F) -> Self {
         let _ = f;
         Self::new(WasmPtr::new_guest(<A::WrapPrimFuncOnGuest<F, R>>::FUNC))
-    }
-
-    pub const fn new_guest_raw(f: *const ()) -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _ = f;
-            panic!("attempted to call guest function on non-guest platform");
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            Self {
-                _ty: PhantomData,
-                addr: WasmFuncAddr { func: f },
-            }
-        }
     }
 }
 
@@ -987,7 +1066,7 @@ macro_rules! guest_export {
                 ))
             }
 
-            $crate::WasmFunc::new_guest_raw($fn_name::<$($($generic,)*)?> as *const ())
+            $crate::WasmFunc::new($crate::WasmPtr::new_guest($fn_name::<$($($generic,)*)?> as *const ()))
         }
     )*};
 }

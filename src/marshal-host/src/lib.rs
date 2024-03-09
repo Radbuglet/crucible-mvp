@@ -269,7 +269,7 @@ where
 pub trait WasmDynamicExt {
     type Vtable: 'static;
 
-    fn get_vtable<S>(self, mem: &impl MemoryRead) -> anyhow::Result<&Self::Vtable>
+    fn get_vtable(self, mem: &(impl ?Sized + MemoryRead)) -> anyhow::Result<&Self::Vtable>
     where
         Self::Vtable: bytemuck::Pod;
 
@@ -281,7 +281,7 @@ pub trait WasmDynamicExt {
 impl<V: 'static> WasmDynamicExt for WasmDynamic<V> {
     type Vtable = V;
 
-    fn get_vtable<S>(self, mem: &impl MemoryRead) -> anyhow::Result<&Self::Vtable>
+    fn get_vtable(self, mem: &(impl ?Sized + MemoryRead)) -> anyhow::Result<&Self::Vtable>
     where
         Self::Vtable: bytemuck::Pod,
     {
@@ -299,6 +299,41 @@ impl<V: 'static> WasmDynamicExt for WasmDynamic<V> {
             dtor.call(cx, (self.0.base, self.0.meta))?;
         }
         Ok(())
+    }
+}
+
+pub trait WasmDynamicFuncExt {
+    type Args;
+    type Res;
+
+    fn call<S>(
+        self,
+        cx: impl wasmtime::AsContextMut<Data = S>,
+        args: Self::Args,
+    ) -> anyhow::Result<Self::Res>
+    where
+        S: StoreHasMemory + StoreHasTable;
+}
+
+impl<A, R> WasmDynamicFuncExt for WasmDynamicFunc<A, R>
+where
+    A: ExtensibleMarshaledTyList,
+    R: MarshaledTyList,
+{
+    type Args = A;
+    type Res = R;
+
+    fn call<S>(
+        self,
+        mut cx: impl wasmtime::AsContextMut<Data = S>,
+        args: Self::Args,
+    ) -> anyhow::Result<Self::Res>
+    where
+        S: StoreHasMemory + StoreHasTable,
+    {
+        let func = *self.get_vtable(cx.main_memory())?;
+        let func = WasmFuncRef::decode(&mut cx, func.0)?;
+        func.call(cx, args.push_on_first(self.0.base))
     }
 }
 
