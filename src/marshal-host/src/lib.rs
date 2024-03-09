@@ -292,9 +292,13 @@ impl<V: 'static> WasmDynamicExt for WasmDynamic<V> {
     where
         S: StoreHasMemory + StoreHasTable,
     {
-        let dtor = cx.main_memory().load_struct(self.0.meta)?.dtor;
-        let dtor = WasmFuncRef::decode(&mut cx, dtor)?;
-        dtor.call(cx, (self.0.base, self.0.meta))
+        let table = cx.main_memory().load_struct(self.0.meta)?;
+        if table.needs_drop.get() != 0 {
+            let dtor = table.dtor;
+            let dtor = WasmFuncRef::decode(&mut cx, dtor)?;
+            dtor.call(cx, (self.0.base, self.0.meta))?;
+        }
+        Ok(())
     }
 }
 

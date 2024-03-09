@@ -192,10 +192,17 @@ impl MarshaledTy for bool {
 
 // === MarshaledTyList === //
 
+// Core
+pub struct ConcretePrimFuncWrapper<T, F, R>(T, F, R);
+
+pub trait PrimFuncWrapper {
+    const FUNC: *const ();
+}
+
 pub trait MarshaledTyList: Sized + 'static {
     type Prims: WasmPrimitiveList;
 
-    fn wrap_prim_func_on_guest<F, R>(f: F) -> usize
+    type WrapPrimFuncOnGuest<F, R>: PrimFuncWrapper
     where
         F: ZstFn<Self, Output = R>,
         R: MarshaledTyList;
@@ -205,23 +212,29 @@ pub trait MarshaledTyList: Sized + 'static {
     fn from_prims(me: Self::Prims) -> Option<Self>;
 }
 
-impl<T: MarshaledTy> MarshaledTyList for T {
-    type Prims = T::Prim;
-
-    fn wrap_prim_func_on_guest<F, R>(f: F) -> usize
-    where
-        F: ZstFn<Self, Output = R>,
-        R: MarshaledTyList,
-    {
-        let _ = f;
-
+// Derivations
+impl<T: MarshaledTy, F, R> PrimFuncWrapper for ConcretePrimFuncWrapper<T, F, R>
+where
+    F: ZstFn<T, Output = R>,
+    R: MarshaledTyList,
+{
+    const FUNC: *const () = {
         let f = |arg| {
             let arg = T::from_prim(arg).unwrap();
             let res = unsafe { F::call_static(arg) };
             R::into_prims(res)
         };
-        f as fn(T::Prim) -> R::Prims as usize
-    }
+        f as fn(T::Prim) -> R::Prims as *const ()
+    };
+}
+
+impl<T: MarshaledTy> MarshaledTyList for T {
+    type Prims = T::Prim;
+
+    type WrapPrimFuncOnGuest<F, R> = ConcretePrimFuncWrapper<Self, F, R>
+    where
+        F: ZstFn<Self, Output = R>,
+        R: MarshaledTyList;
 
     fn into_prims(me: Self) -> Self::Prims {
         T::into_prim(me)
@@ -234,25 +247,30 @@ impl<T: MarshaledTy> MarshaledTyList for T {
 
 macro_rules! impl_marshaled_res_ty {
     ($($para:ident)*) => {
-        impl<$($para: MarshaledTy,)*> MarshaledTyList for ($($para,)*) {
-            type Prims = ($(<$para as MarshaledTy>::Prim,)*);
-
-            #[allow(non_snake_case)]
-            fn wrap_prim_func_on_guest<F, R>(f: F) -> usize
-            where
-                F: ZstFn<Self, Output = R>,
-                R: MarshaledTyList,
-            {
-                let _ = f;
-
+        #[allow(non_snake_case)]
+        impl<$($para: MarshaledTy,)* F, R> PrimFuncWrapper for ConcretePrimFuncWrapper<($($para,)*), F, R>
+        where
+            F: ZstFn<($($para,)*), Output = R>,
+            R: MarshaledTyList,
+        {
+            const FUNC: *const () = {
                 let f = |$($para,)*| {
-                    let arg = Self::from_prims(($($para,)*)).unwrap();
+                    let arg = <($($para,)*)>::from_prims(($($para,)*)).unwrap();
                     let res = unsafe { F::call_static(arg) };
                     R::into_prims(res)
                 };
 
-                f as fn($(<$para as MarshaledTy>::Prim,)*) -> R::Prims as usize
-            }
+                f as fn($(<$para as MarshaledTy>::Prim,)*) -> R::Prims as *const ()
+            };
+        }
+
+        impl<$($para: MarshaledTy,)*> MarshaledTyList for ($($para,)*) {
+            type Prims = ($(<$para as MarshaledTy>::Prim,)*);
+
+            type WrapPrimFuncOnGuest<F, R> = ConcretePrimFuncWrapper<Self, F, R>
+            where
+                F: ZstFn<Self, Output = R>,
+                R: MarshaledTyList;
 
             #[allow(clippy::unused_unit, non_snake_case)]
             fn into_prims(($($para,)*): Self) -> Self::Prims {
@@ -674,6 +692,7 @@ unsafe impl<V> Zeroable for WasmDynamic<V> {}
 pub struct WasmVtable<V: 'static> {
     pub dtor: WasmFunc<(WasmPtr<()>, WasmPtr<Self>)>,
     pub vtable: WasmPtr<V>,
+    pub needs_drop: LeU32,
 }
 
 impl<V> Copy for WasmVtable<V> {}
@@ -687,14 +706,62 @@ impl<V> Clone for WasmVtable<V> {
 unsafe impl<V> Pod for WasmVtable<V> {}
 unsafe impl<V> Zeroable for WasmVtable<V> {}
 
-pub unsafe trait WasmContainer: Sized {
-    fn into_raw(self) -> *mut Self;
+pub trait WasmContainer: Sized {
+    fn into_raw(self) -> *mut ();
 
-    unsafe fn from_raw(ptr: *mut Self) -> Self;
+    unsafe fn from_raw(ptr: *mut ()) -> Self;
 }
 
 pub trait WasmUnsize<T>: Sized + 'static {
     const TABLE: &'static Self;
+}
+
+// === WasmDynamic Impls === //
+
+impl<T> WasmContainer for &'_ T {
+    fn into_raw(self) -> *mut () {
+        self as *const T as *const () as *mut ()
+    }
+
+    unsafe fn from_raw(ptr: *mut ()) -> Self {
+        &*(ptr as *const T)
+    }
+}
+
+impl<T> WasmContainer for &'_ mut T {
+    fn into_raw(self) -> *mut () {
+        self as *mut T as *mut ()
+    }
+
+    unsafe fn from_raw(ptr: *mut ()) -> Self {
+        &mut *(ptr as *mut T)
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<T> WasmContainer for alloc::boxed::Box<T> {
+    fn into_raw(self) -> *mut () {
+        alloc::boxed::Box::into_raw(self).cast()
+    }
+
+    unsafe fn from_raw(ptr: *mut ()) -> Self {
+        alloc::boxed::Box::from_raw(ptr.cast())
+    }
+}
+
+impl<T> WasmUnsize<T> for () {
+    const TABLE: &'static Self = &();
+}
+
+impl<A, R, F> WasmUnsize<F> for WasmFunc<A, R>
+where
+    A: MarshaledTyList,
+    R: MarshaledTyList,
+    F: Send + Sync + Fn(A) -> R,
+{
+    const TABLE: &'static Self = &WasmFunc::<A, R>::new_guest(&|args| {
+        todo!();
+    });
 }
 
 // === Guest Constructors === //
@@ -804,10 +871,9 @@ where
     A: MarshaledTyList,
     R: MarshaledTyList,
 {
-    pub fn new_guest<F: ZstFn<A, Output = R>>(f: F) -> Self {
-        Self::new(WasmPtr::new_guest(
-            A::wrap_prim_func_on_guest(f) as *const ()
-        ))
+    pub const fn new_guest<F: ZstFn<A, Output = R>>(f: &'static F) -> Self {
+        let _ = f;
+        Self::new(WasmPtr::new_guest(<A::WrapPrimFuncOnGuest<F, R>>::FUNC))
     }
 
     pub const fn new_guest_raw(f: *const ()) -> Self {
@@ -844,13 +910,14 @@ impl<V> WasmDynamic<V> {
                 fn dtor<T2, V2>(ptr: WasmPtr<()>, _meta: WasmPtr<WasmVtable<V2>>)
                 where [T2: WasmContainer]
                 {
-                    drop(unsafe { T2::from_raw(ptr.into_guest().cast::<T2>()) });
+                    drop(unsafe { T2::from_raw(ptr.into_guest()) });
                 }
             }
 
             const TABLE: &'static WasmVtable<V> = &WasmVtable {
                 dtor: Self::dtor::<T, V>(),
                 vtable: WasmPtr::new_guest(V::TABLE),
+                needs_drop: LeU32::new(core::mem::needs_drop::<T>() as u32),
             };
         }
 
