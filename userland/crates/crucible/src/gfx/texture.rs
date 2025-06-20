@@ -169,11 +169,11 @@ pub struct GpuTexture {
 impl GpuTexture {
     pub fn new(size: UVec2) -> Self {
         unsafe extern "C" {
-            fn bnuy_create_texture(width: u32, height: u32) -> u32;
+            fn crucible_create_texture(width: u32, height: u32) -> u32;
         }
 
         Self {
-            handle: unsafe { bnuy_create_texture(size.x, size.y) },
+            handle: unsafe { crucible_create_texture(size.x, size.y) },
             size,
         }
     }
@@ -204,15 +204,15 @@ impl GpuTexture {
 
     pub fn clear_rect(&mut self, rect: Rect) {
         unsafe extern "C" {
-            fn bnuy_clear_texture_rect(target_id: u32, x: u32, y: u32, w: u32, h: u32);
+            fn crucible_clear_texture_rect(target_id: u32, x: u32, y: u32, w: u32, h: u32);
         }
 
-        unsafe { bnuy_clear_texture_rect(self.handle, rect.x(), rect.y(), rect.w(), rect.h()) };
+        unsafe { crucible_clear_texture_rect(self.handle, rect.x(), rect.y(), rect.w(), rect.h()) };
     }
 
     pub fn fill_rect(&mut self, rect: Rect, color: Color8) {
         unsafe extern "C" {
-            fn bnuy_fill_texture_rect(
+            fn crucible_fill_texture_rect(
                 target_id: u32,
                 x: u32,
                 y: u32,
@@ -223,7 +223,7 @@ impl GpuTexture {
         }
 
         unsafe {
-            bnuy_fill_texture_rect(
+            crucible_fill_texture_rect(
                 self.handle,
                 rect.x(),
                 rect.y(),
@@ -236,7 +236,7 @@ impl GpuTexture {
 
     pub fn upload(&mut self, src: &CpuTexture, at: UVec2, clip: Option<Rect>) {
         unsafe extern "C" {
-            fn bnuy_upload_texture(
+            fn crucible_upload_texture(
                 target_id: u32,
                 buffer: *const Color8,
                 buffer_width: u32,
@@ -251,7 +251,7 @@ impl GpuTexture {
         let clip = clip.map_or(ptr::null(), |clip| &clip);
 
         unsafe {
-            bnuy_upload_texture(
+            crucible_upload_texture(
                 self.handle,
                 src.pixels.as_ptr(),
                 src.size.x,
@@ -272,7 +272,7 @@ impl GpuTexture {
         } = args;
 
         unsafe extern "C" {
-            fn bnuy_draw_texture(
+            fn crucible_draw_texture(
                 target_id: u32,
                 src_id: u32,
                 transform: *const [f32; 6],
@@ -285,25 +285,25 @@ impl GpuTexture {
         let clip = clip.map(|rect| [rect.top.x, rect.top.y, rect.size.x, rect.size.y]);
         let clip = clip.map_or(ptr::null(), |clip| &clip);
 
-        unsafe { bnuy_draw_texture(self.handle, texture.handle, &transform, clip, opacity) };
+        unsafe { crucible_draw_texture(self.handle, texture.handle, &transform, clip, opacity) };
     }
 
     pub fn present(&self) {
         unsafe extern "C" {
-            fn bnuy_present(target: u32);
+            fn crucible_present(target: u32);
         }
 
-        unsafe { bnuy_present(self.handle) };
+        unsafe { crucible_present(self.handle) };
     }
 }
 
 impl Drop for GpuTexture {
     fn drop(&mut self) {
         unsafe extern "C" {
-            fn bnuy_destroy_texture(handle: u32);
+            fn crucible_destroy_texture(handle: u32);
         }
 
-        unsafe { bnuy_destroy_texture(self.handle) };
+        unsafe { crucible_destroy_texture(self.handle) };
     }
 }
 

@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 
-use glam::{Affine2, Affine3A};
+use glam::{Affine2, Affine3A, Mat4};
 
 use super::{color::Color8, texture::GpuTexturePart};
 
@@ -41,6 +41,9 @@ bitflags::bitflags! {
 
 // === ModelBuffer === //
 
+#[derive(Debug, Copy, Clone)]
+pub struct InstanceIdx(pub u32);
+
 #[derive(Debug)]
 pub struct ModelBuffer {}
 
@@ -60,7 +63,8 @@ impl ModelBuffer {
     pub fn remove(&mut self, at: InstanceIdx) {
         todo!()
     }
-}
 
-#[derive(Debug, Copy, Clone)]
-pub struct InstanceIdx(pub u32);
+    pub fn draw(&self, camera: Mat4) {
+        todo!()
+    }
+}
