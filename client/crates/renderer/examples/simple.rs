@@ -1,5 +1,9 @@
+use std::{fs::File, io::BufReader};
+
 use crucible_renderer::{GfxContext, REQUIRED_FEATURES};
 use futures::executor::block_on;
+use glam::UVec2;
+use image::ImageFormat;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -19,6 +23,7 @@ struct AppState {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
+    image: wgpu::Texture,
     gfx: GfxContext,
 }
 
@@ -51,7 +56,10 @@ impl ApplicationHandler for App {
                     .request_device(&wgpu::DeviceDescriptor {
                         label: None,
                         required_features: REQUIRED_FEATURES,
-                        required_limits: wgpu::Limits::default(),
+                        required_limits: wgpu::Limits {
+                            max_binding_array_elements_per_shader_stage: 32,
+                            ..Default::default()
+                        },
                         memory_hints: wgpu::MemoryHints::Performance,
                         trace: wgpu::Trace::Off,
                     })
@@ -59,12 +67,31 @@ impl ApplicationHandler for App {
                     .unwrap()
             });
 
-            let gfx = GfxContext::new(device.clone());
+            let mut gfx = GfxContext::new(device.clone());
+
+            let image_cpu = image::load(
+                BufReader::new(File::open("demo.png").unwrap()),
+                ImageFormat::Png,
+            )
+            .unwrap()
+            .into_rgba8();
+
+            let image = gfx.create_texture(image_cpu.width(), image_cpu.height());
+
+            gfx.upload_texture(
+                &image,
+                bytemuck::cast_slice(image_cpu.as_raw()),
+                UVec2::new(image_cpu.width(), image_cpu.height()),
+                UVec2::ZERO,
+                None,
+            )
+            .unwrap();
 
             AppState {
                 device,
                 queue,
                 surface,
+                image,
                 gfx,
             }
         });
@@ -83,15 +110,17 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::RedrawRequested => {
-                let texture = app.surface.get_current_texture().unwrap();
-
-                let texture_view = texture
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
-
-                // TODO
-
-                texture.present();
+                // let texture = app.surface.get_current_texture().unwrap();
+                //
+                // let texture_view = texture
+                //     .texture
+                //     .create_view(&wgpu::TextureViewDescriptor::default());
+                //
+                // app.gfx.register_texture(texture.texture.clone());
+                //
+                // app.gfx.unregister_texture(&texture.texture);
+                //
+                // texture.present();
             }
             _ => {}
         }
