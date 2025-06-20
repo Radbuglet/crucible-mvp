@@ -1,4 +1,8 @@
-use std::{collections::HashMap, num::NonZeroU64};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    num::{NonZeroU32, NonZeroU64},
+};
 
 use anyhow::Context;
 use crevice::std430::AsStd430;
@@ -9,12 +13,103 @@ use crate::{
     utils::{
         align::align_to_pow_2,
         blit::{BlitOptions, blit},
-        crevice::vec2_to_crevice,
+        crevice::{vec2_to_crevice, vertex_attributes},
     },
 };
 
+// === TextureAssets === //
+
+#[derive(Debug)]
+pub struct TextureAssets {
+    pub group_layout: wgpu::BindGroupLayout,
+    pub pipeline: wgpu::RenderPipeline,
+}
+
+impl TextureAssets {
+    pub fn new(device: &wgpu::Device) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/texture.wgsl"))),
+        });
+
+        let group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: Some(NonZeroU32::new(32).unwrap()),
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: Instance::std430_size_static() as _,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &vertex_attributes! {
+                        <Instance as AsStd430>::Output =>
+                        affine_mat_x: wgpu::VertexFormat::Float32x2,
+                        affine_mat_y: wgpu::VertexFormat::Float32x2,
+                        affine_trans: wgpu::VertexFormat::Float32x2,
+                        clip_start: wgpu::VertexFormat::Float32x2,
+                        clip_size: wgpu::VertexFormat::Float32x2,
+                        tint: wgpu::VertexFormat::Uint32,
+                        src_idx: wgpu::VertexFormat::Uint32,
+                    },
+                }],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::all(),
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+
+        Self {
+            group_layout,
+            pipeline,
+        }
+    }
+}
+
+// === GfxContext === //
+
 impl GfxContext {
-    pub fn create_texture(&mut self, width: u32, height: u32) -> anyhow::Result<u32> {
+    pub fn create_texture(&mut self, width: u32, height: u32) -> wgpu::Texture {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("user texture"),
             size: wgpu::Extent3d {
@@ -32,48 +127,38 @@ impl GfxContext {
             view_formats: &[],
         });
 
+        self.register_texture(texture.clone());
+
+        texture
+    }
+
+    pub fn register_texture(&mut self, texture: wgpu::Texture) {
         let texture_view = texture.create_view(&Default::default());
 
-        self.textures.add(crate::TextureState {
-            texture,
-            texture_view,
-            last_draw_command: None,
-        })
+        self.textures.insert(
+            texture.clone(),
+            crate::TextureState {
+                texture,
+                texture_view,
+                last_draw_command: None,
+            },
+        );
     }
 
-    pub fn clear_texture_rect(
-        &mut self,
-        target_id: u32,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
-    ) -> anyhow::Result<()> {
-        todo!()
-    }
-
-    pub fn fill_texture_rect(
-        &mut self,
-        target_id: u32,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
-        color: U8Vec4,
-    ) -> anyhow::Result<()> {
-        todo!()
+    pub fn unregister_texture(&mut self, texture: &wgpu::Texture) {
+        self.textures.remove(texture);
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn upload_texture(
         &mut self,
-        target_id: u32,
+        target: &wgpu::Texture,
         src_data: &[[u8; 4]],
         src_size: UVec2,
         put_at: UVec2,
         clip: Option<(UVec2, UVec2)>,
     ) -> anyhow::Result<()> {
-        let target = self.textures.get_mut(target_id)?;
+        let target = self.textures.get_mut(target).unwrap();
 
         // Allocate a staging buffer for the upload.
         // WGPU Texture copies require a 256x256 byte-aligned size.
@@ -130,15 +215,15 @@ impl GfxContext {
 
     pub fn draw_texture(
         &mut self,
-        target_id: u32,
-        src_id: u32,
+        target: &wgpu::Texture,
+        src: &wgpu::Texture,
         transform: Affine2,
         clip: (Vec2, Vec2),
         tint: U8Vec4,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(src_id != target_id);
+        anyhow::ensure!(target != src);
 
-        let target = self.textures.get_mut(target_id)?;
+        let target = self.textures.get_mut(target).unwrap();
 
         let cmd_idx = *target.last_draw_command.get_or_insert_with(|| {
             let idx = self.commands.len();
@@ -154,7 +239,7 @@ impl GfxContext {
             idx
         });
 
-        let src = self.textures.get_mut(target_id)?;
+        let src = self.textures.get_mut(src).unwrap();
 
         src.last_draw_command = None;
 
@@ -188,9 +273,5 @@ impl GfxContext {
         );
 
         Ok(())
-    }
-
-    pub fn destroy_texture(&mut self, handle: u32) -> anyhow::Result<()> {
-        todo!()
     }
 }

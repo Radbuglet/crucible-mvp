@@ -1,108 +1,34 @@
-use std::{borrow::Cow, collections::HashMap, num::NonZeroU32};
+use std::collections::HashMap;
 
 use crevice::std430::{AsStd430, Vec2};
 use glam::UVec2;
-use utils::{arena::Arena, crevice::vertex_attributes};
+use texture::TextureAssets;
 use wgpu::util::{DeviceExt, StagingBelt};
 
 mod texture;
 mod utils;
 
 pub const REQUIRED_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_BINDING_ARRAY;
+pub const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uint;
 
 #[derive(Debug)]
 pub struct GfxContext {
     device: wgpu::Device,
+    texture_gfx: TextureAssets,
     belt: StagingBelt,
-    texture_draw_group: wgpu::BindGroupLayout,
-    texture_draw_pipeline: wgpu::RenderPipeline,
-    textures: Arena<TextureState>,
+    textures: HashMap<wgpu::Texture, TextureState>,
     commands: Vec<Command>,
 }
 
 impl GfxContext {
     pub fn new(device: wgpu::Device) -> Self {
-        let texture_draw_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/texture.wgsl"))),
-        });
-
-        let texture_draw_group =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: Some(NonZeroU32::new(32).unwrap()),
-                }],
-            });
-
-        let texture_draw_group_multi =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[&texture_draw_group],
-                push_constant_ranges: &[],
-            });
-
-        let texture_draw_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: None,
-                layout: Some(&texture_draw_group_multi),
-                vertex: wgpu::VertexState {
-                    module: &texture_draw_shader,
-                    entry_point: Some("vs_main"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: Instance::std430_size_static() as _,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &vertex_attributes! {
-                            <Instance as AsStd430>::Output =>
-                            affine_mat_x: wgpu::VertexFormat::Float32x2,
-                            affine_mat_y: wgpu::VertexFormat::Float32x2,
-                            affine_trans: wgpu::VertexFormat::Float32x2,
-                            clip_start: wgpu::VertexFormat::Float32x2,
-                            clip_size: wgpu::VertexFormat::Float32x2,
-                            tint: wgpu::VertexFormat::Uint32,
-                            src_idx: wgpu::VertexFormat::Uint32,
-                        },
-                    }],
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &texture_draw_shader,
-                    entry_point: Some("fs_main"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::all(),
-                    })],
-                }),
-                multiview: None,
-                cache: None,
-            });
+        let texture_gfx = TextureAssets::new(&device);
 
         Self {
             device,
+            texture_gfx,
             belt: StagingBelt::new(65535),
-            texture_draw_group,
-            texture_draw_pipeline,
-            textures: Arena::new(),
+            textures: HashMap::default(),
             commands: Vec::new(),
         }
     }
@@ -171,7 +97,7 @@ impl GfxContext {
 
                     let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: None,
-                        layout: &self.texture_draw_group,
+                        layout: &self.texture_gfx.group_layout,
                         entries: &[wgpu::BindGroupEntry {
                             binding: 0,
                             resource: wgpu::BindingResource::TextureViewArray(
@@ -188,7 +114,7 @@ impl GfxContext {
                                 usage: wgpu::BufferUsages::VERTEX,
                             });
 
-                    pass.set_pipeline(&self.texture_draw_pipeline);
+                    pass.set_pipeline(&self.texture_gfx.pipeline);
                     pass.set_bind_group(0, &group, &[]);
 
                     pass.set_vertex_buffer(0, instance_buf.slice(..));
