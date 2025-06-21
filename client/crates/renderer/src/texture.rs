@@ -91,7 +91,18 @@ impl TextureAssets {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: TEXTURE_FORMAT,
-                    blend: None,
+                    blend: Some({
+                        let comp = wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        };
+
+                        wgpu::BlendState {
+                            color: comp,
+                            alpha: comp,
+                        }
+                    }),
                     write_mask: wgpu::ColorWrites::all(),
                 })],
             }),
@@ -128,7 +139,6 @@ impl GfxContext {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn upload_texture(
         &mut self,
         target: &wgpu::Texture,

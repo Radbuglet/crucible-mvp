@@ -57,5 +57,10 @@ fn vs_main(in: VertexInput) -> FragmentInput {
 @fragment
 fn fs_main(in: FragmentInput) -> @location(0) vec4f {
     let texture = textures[in.src_idx];
-    return textureLoad(texture, vec2u(in.uv), 0) * in.tint;
+
+    if in.src_idx != 0xFFFFFFFF {
+        return textureLoad(texture, vec2u(in.uv), 0) * in.tint;
+    } else {
+        return in.tint;
+    }
 }

@@ -2,7 +2,7 @@ use std::{fs::File, io::BufReader};
 
 use crucible_renderer::{GfxContext, TEXTURE_FORMAT, required_features};
 use futures::executor::block_on;
-use glam::{Affine2, U8Vec4, UVec2, Vec2};
+use glam::{Affine2, U8Vec3, U8Vec4, UVec2, Vec2};
 use image::ImageFormat;
 use winit::{
     application::ApplicationHandler,
@@ -144,7 +144,7 @@ impl ApplicationHandler for App {
                         &texture.texture,
                         Some(&app.image_1),
                         Affine2::from_scale_angle_translation(
-                            Vec2::new(0.1, -0.1),
+                            Vec2::new(0.2, -0.2),
                             0.,
                             Vec2::new(0.1, 0.0),
                         ),
@@ -169,7 +169,21 @@ impl ApplicationHandler for App {
                             UVec2::ZERO,
                             UVec2::new(app.image_2.width(), app.image_2.height()),
                         ),
-                        U8Vec4::MAX,
+                        U8Vec3::MAX.extend(50),
+                    )
+                    .unwrap();
+
+                app.gfx
+                    .draw_texture(
+                        &texture.texture,
+                        None,
+                        Affine2::from_scale_angle_translation(
+                            Vec2::new(0.1, -0.1),
+                            10f32.to_radians(),
+                            Vec2::new(-0.1, -0.1),
+                        ),
+                        (UVec2::ZERO, UVec2::ONE),
+                        U8Vec3::new(255, 0, 255).extend(50),
                     )
                     .unwrap();
 
