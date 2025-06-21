@@ -110,7 +110,7 @@ impl TextureAssets {
 
 impl GfxContext {
     pub fn create_texture(&mut self, width: u32, height: u32) -> wgpu::Texture {
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+        self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("user texture"),
             size: wgpu::Extent3d {
                 width,
@@ -125,28 +125,7 @@ impl GfxContext {
                 | wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
-        });
-
-        self.register_texture(texture.clone());
-
-        texture
-    }
-
-    pub fn register_texture(&mut self, texture: wgpu::Texture) {
-        let texture_view = texture.create_view(&Default::default());
-
-        self.textures.insert(
-            texture.clone(),
-            crate::TextureState {
-                texture,
-                texture_view,
-                last_draw_command: None,
-            },
-        );
-    }
-
-    pub fn unregister_texture(&mut self, texture: &wgpu::Texture) {
-        self.textures.remove(texture);
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -158,8 +137,6 @@ impl GfxContext {
         put_at: UVec2,
         clip: Option<(UVec2, UVec2)>,
     ) -> anyhow::Result<()> {
-        let target = self.textures.get_mut(target).unwrap();
-
         // Allocate a staging buffer for the upload.
         // WGPU Texture copies require a 256x256 byte-aligned size.
         let staging_size = UVec2::new(
@@ -201,7 +178,7 @@ impl GfxContext {
 
         // Enqueue the command.
         self.commands.push(Command::UploadTexture {
-            dest: target.texture.clone(),
+            dest: target.clone(),
             src: staging_alloc.buffer().clone(),
             src_offset: staging_alloc.offset(),
             src_size,
@@ -209,7 +186,7 @@ impl GfxContext {
             put_at,
         });
 
-        target.last_draw_command = None;
+        self.last_texture_bindings.remove(target);
 
         Ok(())
     }
@@ -224,26 +201,25 @@ impl GfxContext {
     ) -> anyhow::Result<()> {
         anyhow::ensure!(Some(target) != src);
 
-        let target = self.textures.get_mut(target).unwrap();
+        let cmd_idx = *self
+            .last_texture_bindings
+            .entry(target.clone())
+            .or_insert_with(|| {
+                let idx = self.commands.len();
 
-        let cmd_idx = *target.last_draw_command.get_or_insert_with(|| {
-            let idx = self.commands.len();
+                self.commands.push(Command::DrawTexture {
+                    dest: self.texture_views.get(target),
+                    clear: None,
+                    src_list: Vec::new(),
+                    src_set: HashMap::default(),
+                    instances: Vec::new(),
+                });
 
-            self.commands.push(Command::DrawTexture {
-                dest: target.texture_view.clone(),
-                clear: None,
-                src_list: Vec::new(),
-                src_set: HashMap::default(),
-                instances: Vec::new(),
+                idx
             });
 
-            idx
-        });
-
-        let mut src = src.map(|src| self.textures.get_mut(src).unwrap());
-
-        if let Some(src) = &mut src {
-            src.last_draw_command = None;
+        if let Some(src) = src {
+            self.last_texture_bindings.remove(src);
         }
 
         let Command::DrawTexture {
@@ -257,9 +233,10 @@ impl GfxContext {
         };
 
         let src_idx = src.map_or(u32::MAX, |src| {
-            *src_set.entry(src.texture_view.clone()).or_insert_with(|| {
+            let src_view = self.texture_views.get(src);
+            *src_set.entry(src_view.clone()).or_insert_with(|| {
                 let idx = src_list.len() as u32;
-                src_list.push(src.texture_view.clone());
+                src_list.push(src_view);
                 idx
             })
         });

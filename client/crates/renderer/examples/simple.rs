@@ -76,11 +76,17 @@ impl ApplicationHandler for App {
             .unwrap()
             .into_rgba8();
 
+            let image_cpu_bgra = bytemuck::cast_slice::<u8, [u8; 4]>(image_cpu.as_raw())
+                .iter()
+                .copied()
+                .map(|[r, g, b, a]| [b, g, r, a])
+                .collect::<Vec<[u8; 4]>>();
+
             let image = gfx.create_texture(image_cpu.width(), image_cpu.height());
 
             gfx.upload_texture(
                 &image,
-                bytemuck::cast_slice(image_cpu.as_raw()),
+                &image_cpu_bgra,
                 UVec2::new(image_cpu.width(), image_cpu.height()),
                 UVec2::ZERO,
                 None,
@@ -126,14 +132,12 @@ impl ApplicationHandler for App {
 
                 let texture = app.surface.get_current_texture().unwrap();
 
-                app.gfx.register_texture(texture.texture.clone());
-
                 app.gfx
                     .draw_texture(
                         &texture.texture,
                         Some(&app.image),
                         Affine2::from_scale_angle_translation(
-                            Vec2::splat(0.1),
+                            Vec2::new(0.1, -0.1),
                             0.,
                             Vec2::new(0.1, 0.0),
                         ),
@@ -144,8 +148,6 @@ impl ApplicationHandler for App {
                         U8Vec4::new(255, 50, 100, 255),
                     )
                     .unwrap();
-
-                app.gfx.unregister_texture(&texture.texture);
 
                 app.gfx.submit(&app.queue);
 

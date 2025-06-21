@@ -8,6 +8,7 @@ anyhow = "1.0.98"
 bytemuck = { version = "1.23.1", features = ["min_const_generics"] }
 crevice = "0.18.0"
 glam = "0.30.4"
+rustc-hash = "2.1.1"
 wgpu = "25.0.2"
 
 [dev-dependencies]

@@ -2,6 +2,7 @@ use std::{collections::HashMap, iter};
 
 use crevice::std430::{self, AsStd430};
 use glam::UVec2;
+use rustc_hash::FxHashMap;
 use texture::TextureAssets;
 use wgpu::util::{DeviceExt, StagingBelt};
 
@@ -16,7 +17,8 @@ pub struct GfxContext {
     device: wgpu::Device,
     texture_gfx: TextureAssets,
     belt: StagingBelt,
-    textures: HashMap<wgpu::Texture, TextureState>,
+    last_texture_bindings: FxHashMap<wgpu::Texture, usize>,
+    texture_views: TextureViewCache,
     commands: Vec<Command>,
 }
 
@@ -28,7 +30,8 @@ impl GfxContext {
             device,
             texture_gfx,
             belt: StagingBelt::new(65535),
-            textures: HashMap::default(),
+            last_texture_bindings: HashMap::default(),
+            texture_views: TextureViewCache::default(),
             commands: Vec::new(),
         }
     }
@@ -132,17 +135,12 @@ impl GfxContext {
             }
         }
 
+        self.last_texture_bindings.clear();
+
         self.belt.finish();
         queue.submit([encoder.finish()]);
         self.belt.recall();
     }
-}
-
-#[derive(Debug)]
-struct TextureState {
-    texture: wgpu::Texture,
-    texture_view: wgpu::TextureView,
-    last_draw_command: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -173,4 +171,16 @@ struct Instance {
     pub clip_size: std430::UVec2,
     pub tint: u32,
     pub src_idx: u32,
+}
+
+#[derive(Debug, Default)]
+struct TextureViewCache(FxHashMap<wgpu::Texture, wgpu::TextureView>);
+
+impl TextureViewCache {
+    fn get(&mut self, texture: &wgpu::Texture) -> wgpu::TextureView {
+        self.0
+            .entry(texture.clone())
+            .or_insert_with(|| texture.create_view(&wgpu::TextureViewDescriptor::default()))
+            .clone()
+    }
 }
