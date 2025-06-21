@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, iter};
 
-use crevice::std430::{AsStd430, Vec2};
+use crevice::std430::{self, AsStd430};
 use glam::UVec2;
 use texture::TextureAssets;
 use wgpu::util::{DeviceExt, StagingBelt};
@@ -9,7 +9,7 @@ mod texture;
 mod utils;
 
 pub const REQUIRED_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_BINDING_ARRAY;
-pub const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uint;
+pub const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 #[derive(Debug)]
 pub struct GfxContext {
@@ -33,7 +33,13 @@ impl GfxContext {
         }
     }
 
-    pub fn dispatch(&mut self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn submit(&mut self, queue: &wgpu::Queue) {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("user draw encoder"),
+            });
+
         for command in self.commands.drain(..) {
             match command {
                 Command::UploadTexture {
@@ -101,7 +107,11 @@ impl GfxContext {
                         entries: &[wgpu::BindGroupEntry {
                             binding: 0,
                             resource: wgpu::BindingResource::TextureViewArray(
-                                &src_list.iter().collect::<Vec<_>>(),
+                                &src_list
+                                    .iter()
+                                    .chain(iter::repeat(src_list.last().unwrap()))
+                                    .take(32)
+                                    .collect::<Vec<_>>(),
                             ),
                         }],
                     });
@@ -116,13 +126,15 @@ impl GfxContext {
 
                     pass.set_pipeline(&self.texture_gfx.pipeline);
                     pass.set_bind_group(0, &group, &[]);
-
                     pass.set_vertex_buffer(0, instance_buf.slice(..));
-
                     pass.draw(0..6, 0..instances.len() as u32);
                 }
             }
         }
+
+        self.belt.finish();
+        queue.submit([encoder.finish()]);
+        self.belt.recall();
     }
 }
 
@@ -154,11 +166,11 @@ enum Command {
 
 #[derive(Debug, Copy, Clone, AsStd430)]
 struct Instance {
-    pub affine_mat_x: Vec2,
-    pub affine_mat_y: Vec2,
-    pub affine_trans: Vec2,
-    pub clip_start: Vec2,
-    pub clip_size: Vec2,
+    pub affine_mat_x: std430::Vec2,
+    pub affine_mat_y: std430::Vec2,
+    pub affine_trans: std430::Vec2,
+    pub clip_start: std430::UVec2,
+    pub clip_size: std430::UVec2,
     pub tint: u32,
     pub src_idx: u32,
 }

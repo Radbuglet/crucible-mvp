@@ -2,6 +2,10 @@ use crevice::std430;
 
 // === Crevice conversions === //
 
+pub fn uvec2_to_crevice(v: glam::UVec2) -> std430::UVec2 {
+    std430::UVec2 { x: v.x, y: v.y }
+}
+
 pub fn vec2_to_crevice(v: glam::Vec2) -> std430::Vec2 {
     std430::Vec2 { x: v.x, y: v.y }
 }

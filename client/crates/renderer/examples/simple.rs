@@ -1,8 +1,8 @@
 use std::{fs::File, io::BufReader};
 
-use crucible_renderer::{GfxContext, REQUIRED_FEATURES};
+use crucible_renderer::{GfxContext, REQUIRED_FEATURES, TEXTURE_FORMAT};
 use futures::executor::block_on;
-use glam::UVec2;
+use glam::{Affine2, U8Vec4, UVec2, Vec2};
 use image::ImageFormat;
 use winit::{
     application::ApplicationHandler,
@@ -110,17 +110,46 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::RedrawRequested => {
-                // let texture = app.surface.get_current_texture().unwrap();
-                //
-                // let texture_view = texture
-                //     .texture
-                //     .create_view(&wgpu::TextureViewDescriptor::default());
-                //
-                // app.gfx.register_texture(texture.texture.clone());
-                //
-                // app.gfx.unregister_texture(&texture.texture);
-                //
-                // texture.present();
+                app.surface.configure(
+                    &app.device,
+                    &wgpu::SurfaceConfiguration {
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        format: TEXTURE_FORMAT,
+                        width: 1920,
+                        height: 1080,
+                        present_mode: wgpu::PresentMode::default(),
+                        desired_maximum_frame_latency: 2,
+                        alpha_mode: wgpu::CompositeAlphaMode::default(),
+                        view_formats: Vec::new(),
+                    },
+                );
+
+                let texture = app.surface.get_current_texture().unwrap();
+
+                app.gfx.register_texture(texture.texture.clone());
+
+                app.gfx
+                    .draw_texture(
+                        &texture.texture,
+                        Some(&app.image),
+                        Affine2::from_scale_angle_translation(
+                            Vec2::splat(0.1),
+                            0.,
+                            Vec2::new(0.1, 0.0),
+                        ),
+                        (
+                            UVec2::ZERO,
+                            UVec2::new(app.image.width(), app.image.height()),
+                        ),
+                        U8Vec4::new(255, 50, 100, 255),
+                    )
+                    .unwrap();
+
+                app.gfx.unregister_texture(&texture.texture);
+
+                app.gfx.submit(&app.queue);
+
+                texture.present();
             }
             _ => {}
         }

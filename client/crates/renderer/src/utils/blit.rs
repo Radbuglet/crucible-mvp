@@ -27,21 +27,21 @@ pub fn blit<'a, T: Copy>(
     anyhow::ensure!(
         src_crop_start
             .saturating_add(crop_size)
-            .cmplt(src_real_size)
+            .cmple(src_real_size)
             .all()
     );
     anyhow::ensure!(
         dest_put_start
             .saturating_add(crop_size)
-            .cmplt(dest_real_size)
+            .cmple(dest_real_size)
             .all()
     );
 
     raw_blit(
-        &src[src_crop_start.y * src_real_size.y..][src_crop_start.x..]
-            [..src_real_size.y * crop_size.y],
-        &mut dest[dest_put_start.y * dest_real_size.y..][dest_put_start.x..]
-            [..dest_real_size.y * crop_size.y],
+        &src[src_real_size.x * src_crop_start.y..][src_crop_start.x..]
+            [..src_real_size.x * crop_size.y],
+        &mut dest[dest_real_size.x * dest_put_start.y..][dest_put_start.x..]
+            [..dest_real_size.x * crop_size.y],
         options.src_real_size.x,
         options.dest_real_size.x,
         options.crop_size.x,

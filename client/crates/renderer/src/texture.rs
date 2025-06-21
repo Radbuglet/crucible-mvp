@@ -6,14 +6,14 @@ use std::{
 
 use anyhow::Context;
 use crevice::std430::AsStd430;
-use glam::{Affine2, U8Vec4, UVec2, Vec2};
+use glam::{Affine2, U8Vec4, UVec2};
 
 use crate::{
-    Command, GfxContext, Instance,
+    Command, GfxContext, Instance, TEXTURE_FORMAT,
     utils::{
         align::align_to_pow_2,
         blit::{BlitOptions, blit},
-        crevice::{vec2_to_crevice, vertex_attributes},
+        crevice::{uvec2_to_crevice, vec2_to_crevice, vertex_attributes},
     },
 };
 
@@ -42,7 +42,7 @@ impl TextureAssets {
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
-                count: Some(NonZeroU32::new(32).unwrap()),
+                count: Some(const { NonZeroU32::new(32).unwrap() }),
             }],
         });
 
@@ -67,8 +67,8 @@ impl TextureAssets {
                         affine_mat_x: wgpu::VertexFormat::Float32x2,
                         affine_mat_y: wgpu::VertexFormat::Float32x2,
                         affine_trans: wgpu::VertexFormat::Float32x2,
-                        clip_start: wgpu::VertexFormat::Float32x2,
-                        clip_size: wgpu::VertexFormat::Float32x2,
+                        clip_start: wgpu::VertexFormat::Uint32x2,
+                        clip_size: wgpu::VertexFormat::Uint32x2,
                         tint: wgpu::VertexFormat::Uint32,
                         src_idx: wgpu::VertexFormat::Uint32,
                     },
@@ -90,7 +90,7 @@ impl TextureAssets {
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    format: TEXTURE_FORMAT,
                     blend: None,
                     write_mask: wgpu::ColorWrites::all(),
                 })],
@@ -120,7 +120,7 @@ impl GfxContext {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: TEXTURE_FORMAT,
             usage: wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -170,6 +170,7 @@ impl GfxContext {
         let staging_len = staging_size
             .x
             .checked_mul(staging_size.y)
+            .and_then(|v| v.checked_mul(4))
             .context("staging buffer is too big")?;
 
         let Some(size) = NonZeroU64::new(staging_len.into()) else {
@@ -184,7 +185,7 @@ impl GfxContext {
         );
 
         // Blit into it.
-        let (clip_pos, clip_size) = clip.unwrap_or((UVec2::ZERO, staging_size));
+        let (clip_pos, clip_size) = clip.unwrap_or((UVec2::ZERO, src_size));
 
         blit(
             src_data,
@@ -204,7 +205,7 @@ impl GfxContext {
             src: staging_alloc.buffer().clone(),
             src_offset: staging_alloc.offset(),
             src_size,
-            src_stride: staging_size.x,
+            src_stride: staging_size.x * 4,
             put_at,
         });
 
@@ -216,12 +217,12 @@ impl GfxContext {
     pub fn draw_texture(
         &mut self,
         target: &wgpu::Texture,
-        src: &wgpu::Texture,
+        src: Option<&wgpu::Texture>,
         transform: Affine2,
-        clip: (Vec2, Vec2),
+        clip: (UVec2, UVec2),
         tint: U8Vec4,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(target != src);
+        anyhow::ensure!(Some(target) != src);
 
         let target = self.textures.get_mut(target).unwrap();
 
@@ -239,9 +240,11 @@ impl GfxContext {
             idx
         });
 
-        let src = self.textures.get_mut(src).unwrap();
+        let mut src = src.map(|src| self.textures.get_mut(src).unwrap());
 
-        src.last_draw_command = None;
+        if let Some(src) = &mut src {
+            src.last_draw_command = None;
+        }
 
         let Command::DrawTexture {
             instances,
@@ -253,10 +256,12 @@ impl GfxContext {
             unreachable!()
         };
 
-        let src_idx = *src_set.entry(src.texture_view.clone()).or_insert_with(|| {
-            let idx = src_list.len() as u32;
-            src_list.push(src.texture_view.clone());
-            idx
+        let src_idx = src.map_or(u32::MAX, |src| {
+            *src_set.entry(src.texture_view.clone()).or_insert_with(|| {
+                let idx = src_list.len() as u32;
+                src_list.push(src.texture_view.clone());
+                idx
+            })
         });
 
         instances.push(
@@ -264,8 +269,8 @@ impl GfxContext {
                 affine_mat_x: vec2_to_crevice(transform.matrix2.x_axis),
                 affine_mat_y: vec2_to_crevice(transform.matrix2.y_axis),
                 affine_trans: vec2_to_crevice(transform.translation),
-                clip_start: vec2_to_crevice(clip.0),
-                clip_size: vec2_to_crevice(clip.1),
+                clip_start: uvec2_to_crevice(clip.0),
+                clip_size: uvec2_to_crevice(clip.1),
                 tint: u32::from_le_bytes(tint.to_array()),
                 src_idx,
             }
