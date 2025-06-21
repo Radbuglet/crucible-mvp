@@ -9,7 +9,11 @@ use wgpu::util::{DeviceExt, StagingBelt};
 mod texture;
 mod utils;
 
-pub const REQUIRED_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_BINDING_ARRAY;
+pub fn required_features() -> wgpu::Features {
+    wgpu::Features::TEXTURE_BINDING_ARRAY
+        | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+}
+
 pub const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 #[derive(Debug)]

@@ -1,6 +1,6 @@
 use std::{fs::File, io::BufReader};
 
-use crucible_renderer::{GfxContext, REQUIRED_FEATURES, TEXTURE_FORMAT};
+use crucible_renderer::{GfxContext, TEXTURE_FORMAT, required_features};
 use futures::executor::block_on;
 use glam::{Affine2, U8Vec4, UVec2, Vec2};
 use image::ImageFormat;
@@ -23,7 +23,8 @@ struct AppState {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
-    image: wgpu::Texture,
+    image_1: wgpu::Texture,
+    image_2: wgpu::Texture,
     gfx: GfxContext,
 }
 
@@ -55,7 +56,7 @@ impl ApplicationHandler for App {
                 adapter
                     .request_device(&wgpu::DeviceDescriptor {
                         label: None,
-                        required_features: REQUIRED_FEATURES,
+                        required_features: required_features(),
                         required_limits: wgpu::Limits {
                             max_binding_array_elements_per_shader_stage: 32,
                             ..Default::default()
@@ -69,35 +70,41 @@ impl ApplicationHandler for App {
 
             let mut gfx = GfxContext::new(device.clone());
 
-            let image_cpu = image::load(
-                BufReader::new(File::open("demo.png").unwrap()),
-                ImageFormat::Png,
-            )
-            .unwrap()
-            .into_rgba8();
+            fn create_image(gfx: &mut GfxContext, path: &str) -> wgpu::Texture {
+                let image_cpu =
+                    image::load(BufReader::new(File::open(path).unwrap()), ImageFormat::Png)
+                        .unwrap()
+                        .into_rgba8();
 
-            let image_cpu_bgra = bytemuck::cast_slice::<u8, [u8; 4]>(image_cpu.as_raw())
-                .iter()
-                .copied()
-                .map(|[r, g, b, a]| [b, g, r, a])
-                .collect::<Vec<[u8; 4]>>();
+                let image_cpu_bgra = bytemuck::cast_slice::<u8, [u8; 4]>(image_cpu.as_raw())
+                    .iter()
+                    .copied()
+                    .map(|[r, g, b, a]| [b, g, r, a])
+                    .collect::<Vec<[u8; 4]>>();
 
-            let image = gfx.create_texture(image_cpu.width(), image_cpu.height());
+                let image = gfx.create_texture(image_cpu.width(), image_cpu.height());
 
-            gfx.upload_texture(
-                &image,
-                &image_cpu_bgra,
-                UVec2::new(image_cpu.width(), image_cpu.height()),
-                UVec2::ZERO,
-                None,
-            )
-            .unwrap();
+                gfx.upload_texture(
+                    &image,
+                    &image_cpu_bgra,
+                    UVec2::new(image_cpu.width(), image_cpu.height()),
+                    UVec2::ZERO,
+                    None,
+                )
+                .unwrap();
+
+                image
+            }
+
+            let image_1 = create_image(&mut gfx, "demo1.png");
+            let image_2 = create_image(&mut gfx, "demo2.png");
 
             AppState {
                 device,
                 queue,
                 surface,
-                image,
+                image_1,
+                image_2,
                 gfx,
             }
         });
@@ -135,7 +142,7 @@ impl ApplicationHandler for App {
                 app.gfx
                     .draw_texture(
                         &texture.texture,
-                        Some(&app.image),
+                        Some(&app.image_1),
                         Affine2::from_scale_angle_translation(
                             Vec2::new(0.1, -0.1),
                             0.,
@@ -143,9 +150,26 @@ impl ApplicationHandler for App {
                         ),
                         (
                             UVec2::ZERO,
-                            UVec2::new(app.image.width(), app.image.height()),
+                            UVec2::new(app.image_1.width(), app.image_1.height()),
                         ),
-                        U8Vec4::new(255, 50, 100, 255),
+                        U8Vec4::MAX,
+                    )
+                    .unwrap();
+
+                app.gfx
+                    .draw_texture(
+                        &texture.texture,
+                        Some(&app.image_2),
+                        Affine2::from_scale_angle_translation(
+                            Vec2::new(0.1, -0.1),
+                            40f32.to_radians(),
+                            Vec2::new(-0.1, 0.0),
+                        ),
+                        (
+                            UVec2::ZERO,
+                            UVec2::new(app.image_2.width(), app.image_2.height()),
+                        ),
+                        U8Vec4::MAX,
                     )
                     .unwrap();
 
