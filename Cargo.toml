@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/api", "crates/client", "crates/demo-game", "crates/renderer"]
+
+[workspace.dependencies]
+crucible = { path = "crates/api" }
+crucible-renderer = { path = "crates/renderer" }
