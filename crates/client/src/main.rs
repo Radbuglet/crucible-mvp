@@ -1,17 +1,12 @@
-use std::{env, fs};
+use std::{env, fs, sync::Arc};
 
 use anyhow::Context;
+use runtime::{
+    base::{MainMemory, RtModule, RtState},
+    log::RtLogger,
+};
 
-#[derive(Debug, Default)]
-struct StoreState {
-    main_memory: Option<wasmtime::Memory>,
-}
-
-impl StoreState {
-    fn main_memory(&self) -> wasmtime::Memory {
-        self.main_memory.unwrap()
-    }
-}
+mod runtime;
 
 fn main() -> anyhow::Result<()> {
     let engine = wasmtime::Engine::new(&wasmtime::Config::new())?;
@@ -28,39 +23,22 @@ fn main() -> anyhow::Result<()> {
 
     // Create a linker
     let mut linker = wasmtime::Linker::new(&engine);
-    linker.func_wrap(
-        "crucible",
-        "log",
-        |mut caller: wasmtime::Caller<'_, StoreState>,
-         level: u32,
-         base: u32,
-         len: u32|
-         -> anyhow::Result<()> {
-            let data = caller.data().main_memory().data_mut(&mut caller);
+    RtLogger::define(&mut linker)?;
 
-            let msg = data
-                .get(base as usize..)
-                .and_then(|v| v.get(..len as usize))
-                .context("failed to get message")?;
+    // Setup instance
+    let mut store = wasmtime::Store::new(&engine, RtState::new());
 
-            let msg = std::str::from_utf8(msg).context("malformed log message")?;
-
-            eprintln!("{msg}");
-
-            Ok(())
-        },
-    )?;
-
-    let mut store = wasmtime::Store::new(&engine, StoreState::default());
     let instance = linker
         .instantiate(&mut store, &module)
         .context("failed to instantiate module")?;
 
-    let main_memory = instance
-        .get_memory(&mut store, "memory")
-        .context("failed to get main memory")?;
-
-    store.data_mut().main_memory = Some(main_memory);
+    MainMemory::init(&mut store, instance)?;
+    RtLogger::init(
+        &mut store,
+        Arc::new(move |_store, msg| {
+            eprintln!("{msg}");
+        }),
+    )?;
 
     let main = instance
         .get_typed_func::<(u32, u32), u32>(&mut store, "main")
