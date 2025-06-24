@@ -19,25 +19,62 @@ pub const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 #[derive(Debug)]
 pub struct GfxContext {
     device: wgpu::Device,
+
+    /// Pipeline resources for drawing textures.
     texture_gfx: TextureAssets,
+
+    /// A staging belt for all uploads.
     belt: StagingBelt,
-    last_texture_bindings: FxHashMap<wgpu::Texture, usize>,
+
+    /// A cache of texture views for each texture.
     texture_views: TextureViewCache,
+
+    /// Maps texture render attachments to the index of the last command having drawn to them.
+    last_texture_bindings: FxHashMap<wgpu::Texture, usize>,
+
+    /// The set of commands (draw passes and uploads) to be invoked at the next
+    /// [`GfxContext::submit`] call.
     commands: Vec<Command>,
+
+    /// A placeholder texture.
+    placeholder: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
 impl GfxContext {
     pub fn new(device: wgpu::Device) -> Self {
         let texture_gfx = TextureAssets::new(&device);
 
-        Self {
+        let mut gfx = Self {
             device,
             texture_gfx,
-            belt: StagingBelt::new(65535),
-            last_texture_bindings: HashMap::default(),
+            belt: StagingBelt::new(1 << 16),
             texture_views: TextureViewCache::default(),
+            last_texture_bindings: HashMap::default(),
             commands: Vec::new(),
-        }
+            placeholder: None,
+        };
+
+        // Create a Source-engine-esque placeholder texture.
+        let placeholder = gfx.create_texture(2, 2);
+        gfx.upload_texture(
+            &placeholder,
+            &[
+                [0xFF, 0, 0xFF, 0xFF],
+                [0, 0, 0, 0xFF],
+                [0, 0, 0, 0xFF],
+                [0xFF, 0, 0xFF, 0xFF],
+            ],
+            UVec2::new(2, 2),
+            UVec2::ZERO,
+            None,
+        )
+        .unwrap();
+
+        let placeholder_view = gfx.texture_views.get(&placeholder);
+
+        gfx.placeholder = Some((placeholder, placeholder_view));
+
+        gfx
     }
 
     pub fn submit(&mut self, queue: &wgpu::Queue) {
@@ -108,6 +145,10 @@ impl GfxContext {
                         occlusion_query_set: None,
                     });
 
+                    if instances.is_empty() {
+                        continue;
+                    }
+
                     let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: None,
                         layout: &self.texture_gfx.group_layout,
@@ -116,7 +157,7 @@ impl GfxContext {
                             resource: wgpu::BindingResource::TextureViewArray(
                                 &src_list
                                     .iter()
-                                    .chain(iter::repeat(src_list.last().unwrap()))
+                                    .chain(iter::repeat(&self.placeholder.as_ref().unwrap().1))
                                     .take(32)
                                     .collect::<Vec<_>>(),
                             ),

@@ -1,8 +1,9 @@
 use std::{env, fs, sync::Arc};
 
 use anyhow::Context;
-use crucible_renderer::GfxContext;
+use crucible_renderer::{GfxContext, TEXTURE_FORMAT};
 use futures::executor::block_on;
+use glam::{Affine2, U8Vec3, UVec2, Vec2};
 use winit::{
     event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
@@ -121,17 +122,41 @@ impl FallibleApplicationHandler for App {
 
                 gfx_state.surface.configure(
                     &gfx_state.device,
-                    &gfx_state
-                        .surface
-                        .get_default_config(
-                            &gfx_state.adapter,
-                            window_size.width,
-                            window_size.height,
-                        )
-                        .context("failed to get config")?,
+                    &wgpu::SurfaceConfiguration {
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        format: TEXTURE_FORMAT,
+                        width: window_size.width,
+                        height: window_size.height,
+                        present_mode: wgpu::PresentMode::default(),
+                        desired_maximum_frame_latency: 2,
+                        alpha_mode: wgpu::CompositeAlphaMode::default(),
+                        view_formats: Vec::new(),
+                    },
                 );
 
                 let texture = gfx_state.surface.get_current_texture()?;
+
+                gfx_state.context.clear_texture(
+                    &texture.texture,
+                    wgpu::Color {
+                        r: 0.,
+                        g: 1.,
+                        b: 0.4,
+                        a: 1.0,
+                    },
+                );
+
+                gfx_state.context.draw_texture(
+                    &texture.texture,
+                    None,
+                    Affine2::from_scale_angle_translation(
+                        Vec2::new(0.1, 0.1),
+                        (10f32).to_radians(),
+                        Vec2::ZERO,
+                    ),
+                    (UVec2::ZERO, UVec2::new(1, 1)),
+                    U8Vec3::new(34, 45, 100).extend(0xFF),
+                )?;
 
                 gfx_state.context.submit(&gfx_state.queue);
                 texture.present();

@@ -160,13 +160,13 @@ impl GfxContext {
             .and_then(|v| v.checked_mul(4))
             .context("staging buffer is too big")?;
 
-        let Some(size) = NonZeroU64::new(staging_len.into()) else {
+        let Some(staging_len) = NonZeroU64::new(staging_len.into()) else {
             // (nothing to write)
             return Ok(());
         };
 
         let staging_alloc = self.belt.allocate(
-            size,
+            staging_len,
             const { NonZeroU64::new(wgpu::COPY_BUFFER_ALIGNMENT).unwrap() },
             &self.device,
         );
@@ -201,6 +201,45 @@ impl GfxContext {
         Ok(())
     }
 
+    fn get_texture_draw_pass(&mut self, texture: &wgpu::Texture) -> usize {
+        *self
+            .last_texture_bindings
+            .entry(texture.clone())
+            .or_insert_with(|| {
+                let idx = self.commands.len();
+
+                self.commands.push(Command::DrawTexture {
+                    dest: self.texture_views.get(texture),
+                    clear: None,
+                    src_list: Vec::new(),
+                    src_set: HashMap::default(),
+                    instances: Vec::new(),
+                });
+
+                idx
+            })
+    }
+
+    pub fn clear_texture(&mut self, target: &wgpu::Texture, color: wgpu::Color) {
+        let cmd_idx = self.get_texture_draw_pass(target);
+
+        let Command::DrawTexture {
+            instances,
+            src_list,
+            src_set,
+            clear,
+            ..
+        } = &mut self.commands[cmd_idx]
+        else {
+            unreachable!()
+        };
+
+        *clear = Some(color);
+        instances.clear();
+        src_list.clear();
+        src_set.clear();
+    }
+
     pub fn draw_texture(
         &mut self,
         target: &wgpu::Texture,
@@ -211,22 +250,7 @@ impl GfxContext {
     ) -> anyhow::Result<()> {
         anyhow::ensure!(Some(target) != src);
 
-        let cmd_idx = *self
-            .last_texture_bindings
-            .entry(target.clone())
-            .or_insert_with(|| {
-                let idx = self.commands.len();
-
-                self.commands.push(Command::DrawTexture {
-                    dest: self.texture_views.get(target),
-                    clear: None,
-                    src_list: Vec::new(),
-                    src_set: HashMap::default(),
-                    instances: Vec::new(),
-                });
-
-                idx
-            });
+        let cmd_idx = self.get_texture_draw_pass(target);
 
         if let Some(src) = src {
             self.last_texture_bindings.remove(src);

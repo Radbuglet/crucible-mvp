@@ -700,6 +700,7 @@ dependencies = [
  "anyhow",
  "crucible-renderer",
  "futures",
+ "glam",
  "late-struct",
  "tracing",
  "tracing-subscriber",

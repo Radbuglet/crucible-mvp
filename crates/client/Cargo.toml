@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.98"
 crucible-renderer.workspace = true
 futures = "0.3.31"
+glam = "0.30.4"
 late-struct = "0.1.0"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
