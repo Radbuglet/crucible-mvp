@@ -5,5 +5,11 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"
+crucible-renderer.workspace = true
+futures = "0.3.31"
 late-struct = "0.1.0"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 wasmtime = "34.0.0"
+wgpu = "25.0.2"
+winit = "0.30.11"
