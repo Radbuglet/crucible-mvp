@@ -41,9 +41,9 @@ macro_rules! conversions {
 #[derive(Copy, Clone, Hash, Eq, PartialEq)]
 #[repr(C)]
 pub struct Color8 {
-    pub r: u8,
-    pub g: u8,
     pub b: u8,
+    pub g: u8,
+    pub r: u8,
     pub a: u8,
 }
 

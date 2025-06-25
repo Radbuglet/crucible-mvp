@@ -10,7 +10,7 @@ pub type RtState = LateInstance<RtStateNs>;
 #[non_exhaustive]
 pub struct RtStateNs;
 
-late_struct!(RtStateNs => dyn 'static + fmt::Debug + Send + Sync);
+late_struct!(RtStateNs => dyn 'static + fmt::Debug);
 
 pub trait RtFieldExt: LateField<RtStateNs> {
     fn get<'a>(store: impl Into<wasmtime::StoreContext<'a, RtState>>) -> &'a Self::Value {

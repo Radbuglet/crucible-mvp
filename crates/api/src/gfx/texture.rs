@@ -1,6 +1,6 @@
 use std::{iter, ptr, slice};
 
-use glam::{Affine2, UVec2, Vec2};
+use glam::{Affine2, UVec2, Vec2, Vec4};
 
 use super::{color::Color8, rect::Rect};
 
@@ -168,13 +168,29 @@ pub struct GpuTexture {
 
 impl GpuTexture {
     pub fn new(size: UVec2) -> Self {
+        #[link(wasm_import_module = "crucible")]
         unsafe extern "C" {
-            fn crucible_create_texture(width: u32, height: u32) -> u32;
+            fn create_texture(width: u32, height: u32) -> u32;
         }
 
         Self {
-            handle: unsafe { crucible_create_texture(size.x, size.y) },
+            handle: unsafe { create_texture(size.x, size.y) },
             size,
+        }
+    }
+
+    pub fn swapchain() -> Self {
+        #[link(wasm_import_module = "crucible")]
+        unsafe extern "C" {
+            fn get_swapchain_texture(out_size: *mut [u32; 2]) -> u32;
+        }
+
+        let mut size = [0; 2];
+        let handle = unsafe { get_swapchain_texture(&mut size) };
+
+        Self {
+            handle,
+            size: UVec2::new(size[0], size[1]),
         }
     }
 
@@ -195,43 +211,12 @@ impl GpuTexture {
     }
 
     pub fn clear(&mut self, color: Color8) {
-        self.clear_rect(self.full_rect());
-
-        if color.to_bytes() != [0; 4] {
-            self.fill_rect(self.full_rect(), color);
-        }
-    }
-
-    pub fn clear_rect(&mut self, rect: Rect) {
+        #[link(wasm_import_module = "crucible")]
         unsafe extern "C" {
-            fn crucible_clear_texture_rect(target_id: u32, x: u32, y: u32, w: u32, h: u32);
+            fn clear_texture(target_id: u32, color: u32);
         }
 
-        unsafe { crucible_clear_texture_rect(self.handle, rect.x(), rect.y(), rect.w(), rect.h()) };
-    }
-
-    pub fn fill_rect(&mut self, rect: Rect, color: Color8) {
-        unsafe extern "C" {
-            fn crucible_fill_texture_rect(
-                target_id: u32,
-                x: u32,
-                y: u32,
-                w: u32,
-                h: u32,
-                color: *const [u8; 4],
-            );
-        }
-
-        unsafe {
-            crucible_fill_texture_rect(
-                self.handle,
-                rect.x(),
-                rect.y(),
-                rect.w(),
-                rect.h(),
-                &color.to_bytes(),
-            )
-        };
+        unsafe { clear_texture(self.handle, u32::from_le_bytes(color.to_bytes())) };
     }
 
     pub fn upload(&mut self, src: &CpuTexture, at: UVec2, clip: Option<Rect>) {
@@ -268,63 +253,71 @@ impl GpuTexture {
             texture,
             transform,
             clip,
-            opacity,
+            tint,
         } = args;
 
+        #[link(wasm_import_module = "crucible")]
         unsafe extern "C" {
-            fn crucible_draw_texture(
+            fn draw_texture(
                 target_id: u32,
                 src_id: u32,
                 transform: *const [f32; 6],
                 clip: *const [u32; 4],
-                opacity: f32,
+                tint: *const [f32; 4],
             );
         }
 
         let transform = transform.to_cols_array();
         let clip = clip.map(|rect| [rect.top.x, rect.top.y, rect.size.x, rect.size.y]);
         let clip = clip.map_or(ptr::null(), |clip| &clip);
+        let tint = tint.to_array();
 
-        unsafe { crucible_draw_texture(self.handle, texture.handle, &transform, clip, opacity) };
-    }
-
-    pub fn present(&self) {
-        unsafe extern "C" {
-            fn crucible_present(target: u32);
-        }
-
-        unsafe { crucible_present(self.handle) };
+        unsafe {
+            draw_texture(
+                self.handle,
+                texture.map_or(0, |v| v.handle),
+                &transform,
+                clip,
+                &tint,
+            )
+        };
     }
 }
 
 impl Drop for GpuTexture {
     fn drop(&mut self) {
+        #[link(wasm_import_module = "crucible")]
         unsafe extern "C" {
-            fn crucible_destroy_texture(handle: u32);
+            fn destroy_texture(handle: u32);
         }
 
-        unsafe { crucible_destroy_texture(self.handle) };
+        unsafe { destroy_texture(self.handle) };
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Default)]
 #[must_use]
 #[non_exhaustive]
 pub struct GpuDrawArgs<'a> {
-    pub texture: &'a GpuTexture,
+    pub texture: Option<&'a GpuTexture>,
     pub transform: Affine2,
     pub clip: Option<Rect>,
-    pub opacity: f32,
+    pub tint: Vec4,
 }
 
 impl<'a> GpuDrawArgs<'a> {
-    pub fn new(texture: &'a GpuTexture) -> Self {
+    pub fn new() -> Self {
         Self {
-            texture,
+            texture: None,
             transform: Affine2::IDENTITY,
             clip: None,
-            opacity: 1.,
+            tint: Vec4::ONE,
         }
+    }
+
+    pub fn textured(mut self, texture: &'a GpuTexture) -> Self {
+        self.texture = Some(texture);
+        self
     }
 
     pub fn translated(mut self, by: Vec2) -> Self {
@@ -347,8 +340,8 @@ impl<'a> GpuDrawArgs<'a> {
         self
     }
 
-    pub fn opacity(mut self, opacity: f32) -> Self {
-        self.opacity = opacity;
+    pub fn tint(mut self, color: Vec4) -> Self {
+        self.tint = color;
         self
     }
 }

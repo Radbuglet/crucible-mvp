@@ -691,6 +691,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
  "glam",
+ "scopeguard",
 ]
 
 [[package]]
@@ -698,7 +699,9 @@ name = "crucible-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "crucible-renderer",
+ "derive-where",
  "futures",
  "glam",
  "late-struct",
@@ -760,6 +763,17 @@ name = "demo-game"
 version = "0.1.0"
 dependencies = [
  "crucible",
+]
+
+[[package]]
+name = "derive-where"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "510c292c8cf384b1a340b816a9a6cf2599eb8f566a44949024af88418000c50b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

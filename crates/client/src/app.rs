@@ -1,9 +1,8 @@
-use std::{env, fs, sync::Arc};
+use std::{cell::RefCell, env, fs, rc::Rc, sync::Arc};
 
 use anyhow::Context;
 use crucible_renderer::{GfxContext, TEXTURE_FORMAT};
 use futures::executor::block_on;
-use glam::{Affine2, U8Vec3, UVec2, Vec2};
 use winit::{
     event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
@@ -12,8 +11,10 @@ use winit::{
 
 use crate::{
     runtime::{
-        base::{RtModule, RtState},
+        base::{MainMemory, RtFieldExt, RtModule, RtState},
         log::RtLogger,
+        main_loop::RtMainLoop,
+        renderer::RtRenderer,
     },
     utils::winit::{FallibleApplicationHandler, run_app_fallible},
 };
@@ -44,7 +45,7 @@ struct ActiveGfxState {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    context: GfxContext,
+    context: Rc<RefCell<GfxContext>>,
 }
 
 impl FallibleApplicationHandler for App {
@@ -89,7 +90,12 @@ impl FallibleApplicationHandler for App {
                 })
                 .await?;
 
-            let context = GfxContext::new(device.clone());
+            let context = Rc::new(RefCell::new(GfxContext::new(device.clone())));
+
+            RtRenderer::init(
+                &mut self.current_game.as_mut().unwrap().store,
+                context.clone(),
+            )?;
 
             window.set_visible(true);
 
@@ -136,29 +142,19 @@ impl FallibleApplicationHandler for App {
 
                 let texture = gfx_state.surface.get_current_texture()?;
 
-                gfx_state.context.clear_texture(
-                    &texture.texture,
-                    wgpu::Color {
-                        r: 0.,
-                        g: 1.,
-                        b: 0.4,
-                        a: 1.0,
-                    },
-                );
+                RtRenderer::get_mut(&mut self.current_game.as_mut().unwrap().store)
+                    .as_mut()
+                    .unwrap()
+                    .set_swapchain_texture(Some(texture.texture.clone()));
 
-                gfx_state.context.draw_texture(
-                    &texture.texture,
-                    None,
-                    Affine2::from_scale_angle_translation(
-                        Vec2::new(0.1, 0.1),
-                        (10f32).to_radians(),
-                        Vec2::ZERO,
-                    ),
-                    (UVec2::ZERO, UVec2::new(1, 1)),
-                    U8Vec3::new(34, 45, 100).extend(0xFF),
-                )?;
+                RtMainLoop::dispatch_redraw(&mut self.current_game.as_mut().unwrap().store)?;
 
-                gfx_state.context.submit(&gfx_state.queue);
+                RtRenderer::get_mut(&mut self.current_game.as_mut().unwrap().store)
+                    .as_mut()
+                    .unwrap()
+                    .set_swapchain_texture(None);
+
+                gfx_state.context.borrow_mut().submit(&gfx_state.queue);
                 texture.present();
             }
             _ => {}
@@ -169,25 +165,49 @@ impl FallibleApplicationHandler for App {
 }
 
 pub fn run_app() -> anyhow::Result<()> {
+    // Creating windowing services
     let event_loop = EventLoop::new()?;
-    let engine = wasmtime::Engine::new(&wasmtime::Config::default())?;
     let gfx_instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
         flags: wgpu::InstanceFlags::default(),
         backend_options: wgpu::BackendOptions::default(),
     });
 
+    // Setup WASM runtime
+    let engine = wasmtime::Engine::new(&wasmtime::Config::default())?;
+
+    let mut linker = wasmtime::Linker::new(&engine);
+    RtLogger::define(&mut linker)?;
+    RtRenderer::define(&mut linker)?;
+    RtMainLoop::define(&mut linker)?;
+
+    // Load module
     let module_path = env::args().nth(1).context("no module supplied")?;
     let module = fs::read(&module_path)
         .with_context(|| format!("failed to read module at `{module_path}`"))?;
 
-    let mut linker = wasmtime::Linker::new(&engine);
-    RtLogger::define(&mut linker)?;
-
     let module = wasmtime::Module::new(&engine, module)?;
+
+    // Instantiate module
     let mut store = wasmtime::Store::new(&engine, RtState::default());
     let instance = linker.instantiate(&mut store, &module)?;
 
+    MainMemory::init(&mut store, instance)?;
+    RtLogger::init(
+        &mut store,
+        Arc::new(move |_state, msg| {
+            // TODO: log levels
+            tracing::info!("{msg}");
+        }),
+    )?;
+    RtMainLoop::init(&mut store, instance)?;
+
+    instance
+        .get_typed_func::<(u32, u32), u32>(&mut store, "main")
+        .context("no main function in binary")?
+        .call(&mut store, (0, 0))?;
+
+    // Start main loop
     let mut app = App {
         engine,
         linker,
