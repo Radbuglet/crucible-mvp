@@ -1,6 +1,6 @@
 use std::{iter, ptr, slice};
 
-use glam::{Affine2, UVec2, Vec2, Vec4};
+use glam::{Affine2, UVec2, Vec2};
 
 use super::{color::Color8, rect::Rect};
 
@@ -220,8 +220,9 @@ impl GpuTexture {
     }
 
     pub fn upload(&mut self, src: &CpuTexture, at: UVec2, clip: Option<Rect>) {
+        #[link(wasm_import_module = "crucible")]
         unsafe extern "C" {
-            fn crucible_upload_texture(
+            fn upload_texture(
                 target_id: u32,
                 buffer: *const Color8,
                 buffer_width: u32,
@@ -236,7 +237,7 @@ impl GpuTexture {
         let clip = clip.map_or(ptr::null(), |clip| &clip);
 
         unsafe {
-            crucible_upload_texture(
+            upload_texture(
                 self.handle,
                 src.pixels.as_ptr(),
                 src.size.x,
@@ -263,14 +264,14 @@ impl GpuTexture {
                 src_id: u32,
                 transform: *const [f32; 6],
                 clip: *const [u32; 4],
-                tint: *const [f32; 4],
+                tint: u32,
             );
         }
 
         let transform = transform.to_cols_array();
         let clip = clip.map(|rect| [rect.top.x, rect.top.y, rect.size.x, rect.size.y]);
         let clip = clip.map_or(ptr::null(), |clip| &clip);
-        let tint = tint.to_array();
+        let tint = u32::from_le_bytes(tint.to_bytes());
 
         unsafe {
             draw_texture(
@@ -278,7 +279,7 @@ impl GpuTexture {
                 texture.map_or(0, |v| v.handle),
                 &transform,
                 clip,
-                &tint,
+                tint,
             )
         };
     }
@@ -295,14 +296,20 @@ impl Drop for GpuTexture {
     }
 }
 
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone)]
 #[must_use]
 #[non_exhaustive]
 pub struct GpuDrawArgs<'a> {
     pub texture: Option<&'a GpuTexture>,
     pub transform: Affine2,
     pub clip: Option<Rect>,
-    pub tint: Vec4,
+    pub tint: Color8,
+}
+
+impl Default for GpuDrawArgs<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<'a> GpuDrawArgs<'a> {
@@ -311,7 +318,7 @@ impl<'a> GpuDrawArgs<'a> {
             texture: None,
             transform: Affine2::IDENTITY,
             clip: None,
-            tint: Vec4::ONE,
+            tint: Color8::from_bytes([0xFF; 4]),
         }
     }
 
@@ -340,7 +347,7 @@ impl<'a> GpuDrawArgs<'a> {
         self
     }
 
-    pub fn tint(mut self, color: Vec4) -> Self {
+    pub fn tint(mut self, color: Color8) -> Self {
         self.tint = color;
         self
     }

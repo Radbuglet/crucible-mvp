@@ -245,7 +245,7 @@ impl GfxContext {
         target: &wgpu::Texture,
         src: Option<&wgpu::Texture>,
         transform: Affine2,
-        clip: (UVec2, UVec2),
+        clip: Option<(UVec2, UVec2)>,
         tint: U8Vec4,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(Some(target) != src);
@@ -273,6 +273,14 @@ impl GfxContext {
                 src_list.push(src_view);
                 idx
             })
+        });
+
+        let clip = clip.unwrap_or_else(|| {
+            (
+                UVec2::ZERO,
+                src.as_ref()
+                    .map_or(UVec2::ONE, |v| UVec2::new(v.width(), v.height())),
+            )
         });
 
         instances.push(

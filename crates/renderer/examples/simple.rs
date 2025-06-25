@@ -148,10 +148,7 @@ impl ApplicationHandler for App {
                             0.,
                             Vec2::new(0.1, 0.0),
                         ),
-                        (
-                            UVec2::ZERO,
-                            UVec2::new(app.image_1.width(), app.image_1.height()),
-                        ),
+                        None,
                         U8Vec4::MAX,
                     )
                     .unwrap();
@@ -165,10 +162,7 @@ impl ApplicationHandler for App {
                             40f32.to_radians(),
                             Vec2::new(-0.1, 0.0),
                         ),
-                        (
-                            UVec2::ZERO,
-                            UVec2::new(app.image_2.width(), app.image_2.height()),
-                        ),
+                        None,
                         U8Vec3::MAX.extend(50),
                     )
                     .unwrap();
@@ -182,7 +176,7 @@ impl ApplicationHandler for App {
                             10f32.to_radians(),
                             Vec2::new(-0.1, -0.1),
                         ),
-                        (UVec2::ZERO, UVec2::ONE),
+                        None,
                         U8Vec3::new(255, 0, 255).extend(50),
                     )
                     .unwrap();

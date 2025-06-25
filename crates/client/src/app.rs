@@ -166,6 +166,8 @@ impl FallibleApplicationHandler for App {
 
 pub fn run_app() -> anyhow::Result<()> {
     // Creating windowing services
+    tracing::info!("Setting up windowing and graphics contexts.");
+
     let event_loop = EventLoop::new()?;
     let gfx_instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
@@ -174,6 +176,7 @@ pub fn run_app() -> anyhow::Result<()> {
     });
 
     // Setup WASM runtime
+    tracing::info!("Setting up WASM runtime.");
     let engine = wasmtime::Engine::new(&wasmtime::Config::default())?;
 
     let mut linker = wasmtime::Linker::new(&engine);
@@ -182,6 +185,8 @@ pub fn run_app() -> anyhow::Result<()> {
     RtMainLoop::define(&mut linker)?;
 
     // Load module
+    tracing::info!("Loading module.");
+
     let module_path = env::args().nth(1).context("no module supplied")?;
     let module = fs::read(&module_path)
         .with_context(|| format!("failed to read module at `{module_path}`"))?;
@@ -189,6 +194,8 @@ pub fn run_app() -> anyhow::Result<()> {
     let module = wasmtime::Module::new(&engine, module)?;
 
     // Instantiate module
+    tracing::info!("Initializing guest.");
+
     let mut store = wasmtime::Store::new(&engine, RtState::default());
     let instance = linker.instantiate(&mut store, &module)?;
 
@@ -208,6 +215,8 @@ pub fn run_app() -> anyhow::Result<()> {
         .call(&mut store, (0, 0))?;
 
     // Start main loop
+    tracing::info!("Starting main loop!");
+
     let mut app = App {
         engine,
         linker,

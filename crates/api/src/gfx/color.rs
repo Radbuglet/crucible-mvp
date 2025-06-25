@@ -1,5 +1,6 @@
 use std::fmt;
 
+use bytemuck::{Pod, Zeroable};
 use glam::{Vec3, Vec4};
 
 // === Color8 === //
@@ -38,7 +39,7 @@ macro_rules! conversions {
     };
 }
 
-#[derive(Copy, Clone, Hash, Eq, PartialEq)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Pod, Zeroable)]
 #[repr(C)]
 pub struct Color8 {
     pub b: u8,

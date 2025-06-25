@@ -2,6 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use anyhow::Context;
 use crucible_renderer::GfxContext;
+use glam::{Affine2, U8Vec4, UVec2};
 use late_struct::late_field;
 
 use crate::{
@@ -63,7 +64,7 @@ impl RtModule for RtRenderer {
             "crucible",
             "get_swapchain_texture",
             |mut caller: wasmtime::Caller<'_, RtState>, out_size: u32| -> anyhow::Result<u32> {
-                let (data, state) = MainMemory::data_state_mut(&mut caller);
+                let (mem, state) = MainMemory::data_state_mut(&mut caller);
 
                 let Some(renderer) = state.get_mut::<Self>() else {
                     anyhow::bail!("no renderer initialized");
@@ -74,8 +75,7 @@ impl RtModule for RtRenderer {
                     .clone()
                     .context("no swapchain actively bound")?;
 
-                data.mem_elem_mut(out_size, 2)?
-                    .copy_from_slice(&[texture.width().to_le(), texture.height().to_le()]);
+                *mem.mem_arr_mut(out_size)? = [texture.width().to_le(), texture.height().to_le()];
 
                 let handle = renderer.textures.add(texture)?;
 
@@ -107,6 +107,96 @@ impl RtModule for RtRenderer {
                         a: a as f64 / 255.,
                     },
                 );
+
+                Ok(())
+            },
+        )?;
+
+        linker.func_wrap(
+            "crucible",
+            "upload_texture",
+            |mut caller: wasmtime::Caller<'_, RtState>,
+             target_id: u32,
+             buffer: u32, // *const Color8,
+             buffer_width: u32,
+             buffer_height: u32,
+             at_x: u32,
+             at_y: u32,
+             // clip: *const [u32; 4]
+             clip: u32|
+             -> anyhow::Result<()> {
+                let (mem, state) = MainMemory::data_state_mut(&mut caller);
+
+                let Some(renderer) = state.get_mut::<Self>() else {
+                    anyhow::bail!("no renderer initialized");
+                };
+
+                let target = renderer.textures.get(target_id)?;
+
+                let data = mem.mem_elem::<[u8; 4]>(
+                    buffer,
+                    buffer_width
+                        .checked_mul(buffer_height)
+                        .context("buffer size too large")?,
+                )?;
+
+                let clip = if clip != 0 {
+                    let [x, y, w, h] = mem.mem_arr::<u32, 4>(clip)?.map(u32::from_le);
+
+                    Some((UVec2::new(x, y), UVec2::new(w, h)))
+                } else {
+                    None
+                };
+
+                renderer.context.borrow_mut().upload_texture(
+                    target,
+                    data,
+                    UVec2::new(buffer_width, buffer_height),
+                    UVec2::new(at_x, at_y),
+                    clip,
+                )?;
+
+                Ok(())
+            },
+        )?;
+
+        linker.func_wrap(
+            "crucible",
+            "draw_texture",
+            |mut caller: wasmtime::Caller<'_, RtState>,
+             target_id: u32,
+             src_id: u32,
+             transform: u32, // *const [f32; 6],
+             clip: u32,      // *const [u32; 4],
+             tint: u32|
+             -> anyhow::Result<()> {
+                let (mem, state) = MainMemory::data_state_mut(&mut caller);
+
+                let Some(renderer) = state.get_mut::<Self>() else {
+                    anyhow::bail!("no renderer initialized");
+                };
+
+                let target = renderer.textures.get(target_id)?;
+                let src = if src_id != 0 {
+                    Some(renderer.textures.get(src_id)?)
+                } else {
+                    None
+                };
+
+                let transform = Affine2::from_cols_array(mem.mem_arr(transform)?);
+                let clip = if clip != 0 {
+                    let [x, y, w, h] = mem.mem_arr::<u32, 4>(clip)?.map(u32::from_le);
+
+                    Some((UVec2::new(x, y), UVec2::new(w, h)))
+                } else {
+                    None
+                };
+                let tint = U8Vec4::from_array(tint.to_le_bytes());
+
+                renderer
+                    .context
+                    .borrow_mut()
+                    .draw_texture(target, src, transform, clip, tint)?;
 
                 Ok(())
             },
