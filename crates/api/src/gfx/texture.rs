@@ -253,6 +253,7 @@ impl GpuTexture {
         let GpuDrawArgs {
             texture,
             transform,
+            transform_mode,
             clip,
             tint,
         } = args;
@@ -268,7 +269,17 @@ impl GpuTexture {
             );
         }
 
-        let transform = transform.to_cols_array();
+        let transform = transform_mode
+            .normalize_xf(
+                transform,
+                texture.map_or_else(
+                    || clip.map_or(UVec2::ONE, |v| v.size),
+                    |texture| texture.size,
+                ),
+                self.size,
+            )
+            .to_cols_array();
+
         let clip = clip.map(|rect| [rect.top.x, rect.top.y, rect.size.x, rect.size.y]);
         let clip = clip.map_or(ptr::null(), |clip| &clip);
         let tint = u32::from_le_bytes(tint.to_bytes());
@@ -302,6 +313,7 @@ impl Drop for GpuTexture {
 pub struct GpuDrawArgs<'a> {
     pub texture: Option<&'a GpuTexture>,
     pub transform: Affine2,
+    pub transform_mode: TransformMode,
     pub clip: Option<Rect>,
     pub tint: Color8,
 }
@@ -317,6 +329,7 @@ impl<'a> GpuDrawArgs<'a> {
         Self {
             texture: None,
             transform: Affine2::IDENTITY,
+            transform_mode: TransformMode::default(),
             clip: None,
             tint: Color8::from_bytes([0xFF; 4]),
         }
@@ -327,22 +340,22 @@ impl<'a> GpuDrawArgs<'a> {
         self
     }
 
-    pub fn translated(mut self, by: Vec2) -> Self {
+    pub fn translate(mut self, by: Vec2) -> Self {
         self.transform = Affine2::from_translation(by) * self.transform;
         self
     }
 
-    pub fn scaled(mut self, factor: Vec2) -> Self {
+    pub fn scale(mut self, factor: Vec2) -> Self {
         self.transform = Affine2::from_scale(factor) * self.transform;
         self
     }
 
-    pub fn transformed(mut self, transform: Affine2) -> Self {
-        self.transform = transform;
+    pub fn transform(mut self, transform: Affine2) -> Self {
+        self.transform = transform * self.transform;
         self
     }
 
-    pub fn clipped(mut self, rect: Option<Rect>) -> Self {
+    pub fn clip(mut self, rect: Option<Rect>) -> Self {
         self.clip = rect;
         self
     }
@@ -350,6 +363,65 @@ impl<'a> GpuDrawArgs<'a> {
     pub fn tint(mut self, color: Color8) -> Self {
         self.tint = color;
         self
+    }
+
+    pub fn mode(mut self, mode: TransformMode) -> Self {
+        self.transform_mode = mode;
+        self
+    }
+}
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Default)]
+pub enum TransformMode {
+    /// The transform is to be interpreted as a mapping from a unit square from `(0, 0)` to `(1, 1)`
+    /// representing the cropped portion of the source texture onto a coordinate system representing
+    /// the entire destination texture where `(0, 0)` maps to the top left of the target texture and
+    /// `(target.width, target.height)` maps to its bottom right.
+    #[default]
+    FixSize,
+
+    /// The transform is to be interpreted as a mapping from a rectangle from `(0, 0)` to
+    /// `(crop.width, crop.height)` representing the cropped portion of the source texture onto a
+    /// coordinate system representing the entire destination texture where `(0, 0)` maps to the top
+    /// left of the target texture and `(target.width, target.height)` maps to its bottom right.
+    ScaleSize,
+
+    /// The transform is to be interpreted as an OpenGL normalized-device-coordinate-esque mapping
+    /// from a unit square from `(-1, -1)` to `(1, 1)` representing the cropped portion of the
+    /// source texture onto a coordinate system representing the entire destination texture where
+    /// `(-1, -1)` maps to the bottom left of the target texture and `(1, 1)` maps to its top right.
+    OpenGl,
+}
+
+impl TransformMode {
+    pub fn normalize_xf(self, xf: Affine2, src_size: UVec2, target_size: UVec2) -> Affine2 {
+        match self {
+            TransformMode::FixSize | TransformMode::ScaleSize => {
+                let mut whole_xf = Affine2::IDENTITY;
+
+                // We're starting from a unit square representing the cropped portion of the source
+                // texture. Let us map this into the source form expected by the mode.
+                whole_xf = Affine2::from_translation(Vec2::ONE) * whole_xf;
+                whole_xf = Affine2::from_scale(Vec2::splat(0.5)) * whole_xf;
+
+                if self == TransformMode::ScaleSize {
+                    whole_xf = Affine2::from_scale(src_size.as_vec2()) * whole_xf;
+                }
+
+                // Now, let us apply the user's transformation, getting us into a mode-specific
+                // destination space.
+                whole_xf = xf * whole_xf;
+
+                // Finally, let's convert our destination space ranging from `(0, 0)` to
+                // `(target.width, target.height)` to a space ranging from `(-1, -1)` to `(1, 1)`.
+                whole_xf = Affine2::from_scale(target_size.as_vec2().recip()) * whole_xf;
+                whole_xf = Affine2::from_translation(-Vec2::ONE) * whole_xf;
+                whole_xf = Affine2::from_scale(Vec2::new(1., -1.)) * whole_xf;
+
+                whole_xf
+            }
+            TransformMode::OpenGl => xf,
+        }
     }
 }
 

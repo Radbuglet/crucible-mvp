@@ -55,7 +55,7 @@ async fn main_loop() {
                 swapchain.draw(
                     GpuDrawArgs::new()
                         .textured(&izutsumi)
-                        .scaled(Vec2::splat(0.1))
+                        .scale(Vec2::splat(500.0))
                         .tint(Color8::GRAY),
                 );
 
