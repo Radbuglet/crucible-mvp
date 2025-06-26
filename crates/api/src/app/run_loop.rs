@@ -12,12 +12,24 @@ extern "C" fn crucible_dispatch_redraw() {
     dispatch_event(MainLoopEvent::Redraw);
 }
 
-// === Userland === //
+#[unsafe(no_mangle)]
+extern "C" fn crucible_dispatch_request_exit() {
+    dispatch_event(MainLoopEvent::ExitRequested);
+}
+
+// === MainLoop Events === //
 
 #[derive(Debug)]
 pub enum MainLoopEvent {
     Redraw,
+    ExitRequested,
+    Client(ClientEvent),
 }
+
+#[derive(Debug)]
+pub enum ClientEvent {}
+
+// === MainLoop Executor === //
 
 thread_local! {
     static IS_DISPATCHING: Cell<bool> = const { Cell::new(false) };
@@ -52,12 +64,12 @@ fn dispatch_event(ev: MainLoopEvent) {
     });
 
     // Acquire main loop
-    let mut main_loop = scopeguard::guard(MAIN_LOOP.take(), |old_loop| {
+    let mut main_loop_guard = scopeguard::guard(MAIN_LOOP.take(), |old_loop| {
         // TODO: Don't blindly override
         MAIN_LOOP.set(old_loop);
     });
 
-    let Some(main_loop) = &mut *main_loop else {
+    let Some(main_loop) = &mut *main_loop_guard else {
         return;
     };
 
@@ -82,9 +94,20 @@ fn dispatch_event(ev: MainLoopEvent) {
         {
             task::Poll::Ready(()) => {
                 DISPATCHED_EVENT.set(None);
+                drop(scopeguard::ScopeGuard::into_inner(main_loop_guard));
+                confirm_app_exit();
                 break;
             }
             task::Poll::Pending => {}
         }
     }
+}
+
+pub fn confirm_app_exit() {
+    #[link(wasm_import_module = "crucible")]
+    unsafe extern "C" {
+        fn confirm_app_exit();
+    }
+
+    unsafe { confirm_app_exit() };
 }

@@ -1,10 +1,8 @@
 use std::panic;
 
 use crucible::{
-    base::{
-        log::{LogLevel, log_str},
-        run_loop::{MainLoopEvent, next_event, set_main_loop},
-    },
+    app::run_loop::{MainLoopEvent, next_event, set_main_loop},
+    base::log::{LogLevel, log_str},
     gfx::{
         color::Color8,
         texture::{CpuTexture, GpuDrawArgs, GpuTexture},
@@ -61,6 +59,8 @@ async fn main_loop() {
 
                 log_str(LogLevel::Info, &format!("{swapchain:?}"));
             }
+            MainLoopEvent::ExitRequested => break,
+            MainLoopEvent::Client(_) => todo!(),
         }
     }
 }

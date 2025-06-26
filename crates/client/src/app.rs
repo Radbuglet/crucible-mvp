@@ -157,7 +157,22 @@ impl FallibleApplicationHandler for App {
                 gfx_state.context.borrow_mut().submit(&gfx_state.queue);
                 texture.present();
             }
+            WindowEvent::CloseRequested => {
+                RtMainLoop::dispatch_exit_request(&mut self.current_game.as_mut().unwrap().store)?;
+            }
             _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
+        let Some(current_game) = &mut self.current_game else {
+            return Ok(());
+        };
+
+        if RtMainLoop::is_exit_confirmed(&current_game.store) {
+            event_loop.exit();
         }
 
         Ok(())
