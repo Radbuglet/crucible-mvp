@@ -147,7 +147,7 @@ impl FallibleApplicationHandler for App {
                     .unwrap()
                     .set_swapchain_texture(Some(texture.texture.clone()));
 
-                RtMainLoop::dispatch_redraw(&mut self.current_game.as_mut().unwrap().store)?;
+                RtMainLoop::redraw(&mut self.current_game.as_mut().unwrap().store)?;
 
                 RtRenderer::get_mut(&mut self.current_game.as_mut().unwrap().store)
                     .as_mut()
@@ -157,8 +157,15 @@ impl FallibleApplicationHandler for App {
                 gfx_state.context.borrow_mut().submit(&gfx_state.queue);
                 texture.present();
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                RtMainLoop::mouse_moved(
+                    &mut self.current_game.as_mut().unwrap().store,
+                    position.x,
+                    position.y,
+                )?;
+            }
             WindowEvent::CloseRequested => {
-                RtMainLoop::dispatch_exit_request(&mut self.current_game.as_mut().unwrap().store)?;
+                RtMainLoop::request_exit(&mut self.current_game.as_mut().unwrap().store)?;
             }
             _ => {}
         }
@@ -173,6 +180,14 @@ impl FallibleApplicationHandler for App {
 
         if RtMainLoop::is_exit_confirmed(&current_game.store) {
             event_loop.exit();
+
+            return Ok(());
+        }
+
+        if RtMainLoop::is_redraw_requested(&current_game.store)
+            && let Some(gfx_state) = &mut self.gfx_state
+        {
+            gfx_state.window.request_redraw();
         }
 
         Ok(())

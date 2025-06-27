@@ -4,6 +4,7 @@ use futures::{
     StreamExt,
     channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded},
 };
+use glam::DVec2;
 
 use super::task::wake_executor;
 
@@ -19,6 +20,13 @@ extern "C" fn crucible_dispatch_request_exit() {
     dispatch_event(MainLoopEvent::ExitRequested);
 }
 
+#[unsafe(no_mangle)]
+extern "C" fn crucible_dispatch_mouse_moved(x: f64, y: f64) {
+    dispatch_event(MainLoopEvent::Client(ClientEvent::MouseMoved(DVec2::new(
+        x, y,
+    ))));
+}
+
 pub fn confirm_app_exit() {
     #[link(wasm_import_module = "crucible")]
     unsafe extern "C" {
@@ -26,6 +34,15 @@ pub fn confirm_app_exit() {
     }
 
     unsafe { confirm_app_exit() };
+}
+
+pub fn request_redraw() {
+    #[link(wasm_import_module = "crucible")]
+    unsafe extern "C" {
+        fn request_redraw();
+    }
+
+    unsafe { request_redraw() };
 }
 
 // === MainLoop Events === //
@@ -46,7 +63,9 @@ pub enum MainLoopEvent {
 }
 
 #[derive(Debug)]
-pub enum ClientEvent {}
+pub enum ClientEvent {
+    MouseMoved(DVec2),
+}
 
 #[expect(clippy::await_holding_refcell_ref)]
 pub async fn next_event() -> MainLoopEvent {

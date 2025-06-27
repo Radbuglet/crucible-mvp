@@ -2,7 +2,7 @@ use std::panic;
 
 use crucible::{
     app::{
-        run_loop::{MainLoopEvent, confirm_app_exit, next_event},
+        run_loop::{ClientEvent, MainLoopEvent, confirm_app_exit, next_event, request_redraw},
         task::spawn_task,
     },
     base::log::{LogLevel, log_str},
@@ -11,7 +11,7 @@ use crucible::{
         texture::{CpuTexture, GpuDrawArgs, GpuTexture},
     },
 };
-use glam::{UVec2, Vec2};
+use glam::{DVec2, UVec2, Vec2};
 
 fn main() {
     panic::set_hook(Box::new(|info| {
@@ -45,6 +45,8 @@ async fn main_loop() {
         .make_gpu()
     };
 
+    let mut draw_pos = DVec2::ZERO;
+
     loop {
         log_str(LogLevel::Info, "Waiting...");
 
@@ -59,13 +61,18 @@ async fn main_loop() {
                     GpuDrawArgs::new()
                         .textured(&izutsumi)
                         .scale(Vec2::splat(500.0))
+                        .translate(draw_pos.as_vec2())
                         .tint(Color8::GRAY),
                 );
 
                 log_str(LogLevel::Info, &format!("{swapchain:?}"));
             }
             MainLoopEvent::ExitRequested => break,
-            MainLoopEvent::Client(_) => todo!(),
+            MainLoopEvent::Client(ClientEvent::MouseMoved(pos)) => {
+                log_str(LogLevel::Info, &format!("{pos:?}"));
+                draw_pos = pos;
+                request_redraw();
+            }
         }
     }
 

@@ -414,7 +414,7 @@ impl TransformMode {
 
                 // Finally, let's convert our destination space ranging from `(0, 0)` to
                 // `(target.width, target.height)` to a space ranging from `(-1, -1)` to `(1, 1)`.
-                whole_xf = Affine2::from_scale(target_size.as_vec2().recip()) * whole_xf;
+                whole_xf = Affine2::from_scale(target_size.as_vec2().recip() * 2.) * whole_xf;
                 whole_xf = Affine2::from_translation(-Vec2::ONE) * whole_xf;
                 whole_xf = Affine2::from_scale(Vec2::new(1., -1.)) * whole_xf;
 
