@@ -1,7 +1,10 @@
 use std::panic;
 
 use crucible::{
-    app::run_loop::{MainLoopEvent, next_event, set_main_loop},
+    app::{
+        run_loop::{MainLoopEvent, confirm_app_exit, next_event},
+        task::spawn_task,
+    },
     base::log::{LogLevel, log_str},
     gfx::{
         color::Color8,
@@ -15,7 +18,7 @@ fn main() {
         log_str(LogLevel::Fatal, &format!("{info}"));
     }));
 
-    set_main_loop(main_loop());
+    spawn_task(main_loop());
 }
 
 async fn main_loop() {
@@ -43,6 +46,8 @@ async fn main_loop() {
     };
 
     loop {
+        log_str(LogLevel::Info, "Waiting...");
+
         match next_event().await {
             MainLoopEvent::Redraw => {
                 log_str(LogLevel::Info, "Render!");
@@ -63,4 +68,6 @@ async fn main_loop() {
             MainLoopEvent::Client(_) => todo!(),
         }
     }
+
+    confirm_app_exit();
 }
