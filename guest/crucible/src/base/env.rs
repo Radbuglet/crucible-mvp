@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 pub enum RunMode {
     Server,
@@ -20,6 +18,11 @@ impl RunMode {
     }
 }
 
-pub fn current_time() -> Instant {
-    todo!()
+pub fn current_time() -> f64 {
+    #[link(wasm_import_module = "crucible")]
+    unsafe extern "C" {
+        fn current_time() -> f64;
+    }
+
+    unsafe { current_time() }
 }

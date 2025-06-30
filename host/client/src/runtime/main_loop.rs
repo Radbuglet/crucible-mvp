@@ -1,19 +1,54 @@
 use late_struct::late_field;
 
-use std::fmt;
+use std::{fmt, mem, time::Instant};
 
-use crate::runtime::base::RtStateNs;
+use crate::{
+    runtime::base::{RtOptFieldExt as _, RtStateNs},
+    utils::wasmtime::StoreDataMut,
+};
 
-use super::base::{RtFieldExt, RtModule, RtState};
+use super::{
+    base::{RtFieldExt, RtModule, RtState},
+    time::RtTime,
+};
 
 #[derive(Debug)]
 pub struct RtMainLoop {
     exit_confirmed: bool,
     redraw_requested: bool,
+    wakeup: Option<Instant>,
     hooks: Hooks,
 }
 
 late_field!(RtMainLoop[RtStateNs] => Option<RtMainLoop>);
+
+impl RtMainLoop {
+    pub fn init(
+        store: &mut wasmtime::Store<RtState>,
+        instance: wasmtime::Instance,
+    ) -> anyhow::Result<()> {
+        *Self::get_mut(&mut *store) = Some(RtMainLoop {
+            exit_confirmed: false,
+            redraw_requested: false,
+            wakeup: None,
+            hooks: Hooks::init(store, instance)?,
+        });
+
+        Ok(())
+    }
+
+    pub fn take_exit_confirmed(store: &mut impl StoreDataMut<Data = RtState>) -> bool {
+        mem::take(&mut Self::get_unwrap_mut(store).exit_confirmed)
+    }
+
+    pub fn take_redraw(store: &mut impl StoreDataMut<Data = RtState>) -> bool {
+        mem::take(&mut Self::get_unwrap_mut(store).redraw_requested)
+    }
+
+    pub fn take_wakeup(store: &mut impl StoreDataMut<Data = RtState>) -> Option<Instant> {
+        mem::take(&mut Self::get_unwrap_mut(store).wakeup)
+    }
+}
 
 impl RtModule for RtMainLoop {
     fn define(linker: &mut wasmtime::Linker<RtState>) -> anyhow::Result<()> {
@@ -44,30 +79,22 @@ impl RtModule for RtMainLoop {
             },
         )?;
 
+        linker.func_wrap(
+            "crucible",
+            "request_loop_wakeup",
+            |mut caller: wasmtime::Caller<RtState>, time: f64| -> anyhow::Result<()> {
+                if Self::get_mut(&mut caller).is_none() {
+                    anyhow::bail!("run loop service not initialized");
+                }
+
+                Self::get_unwrap_mut(&mut caller).wakeup =
+                    Some(RtTime::get_unwrap(&caller).decode_time(time)?);
+
+                Ok(())
+            },
+        )?;
+
         Ok(())
-    }
-}
-
-impl RtMainLoop {
-    pub fn init(
-        store: &mut wasmtime::Store<RtState>,
-        instance: wasmtime::Instance,
-    ) -> anyhow::Result<()> {
-        *Self::get_mut(&mut *store) = Some(RtMainLoop {
-            exit_confirmed: false,
-            redraw_requested: false,
-            hooks: Hooks::init(store, instance)?,
-        });
-
-        Ok(())
-    }
-
-    pub fn is_exit_confirmed(store: &wasmtime::Store<RtState>) -> bool {
-        Self::get(store).as_ref().unwrap().exit_confirmed
-    }
-
-    pub fn is_redraw_requested(store: &wasmtime::Store<RtState>) -> bool {
-        Self::get(store).as_ref().unwrap().redraw_requested
     }
 }
 
@@ -119,4 +146,5 @@ define_hooks! {
     redraw(): "crucible_dispatch_redraw",
     request_exit(): "crucible_dispatch_request_exit",
     mouse_moved(x: f64, y: f64): "crucible_dispatch_mouse_moved",
+    timer_expired(): "crucible_dispatch_timer_expired",
 }

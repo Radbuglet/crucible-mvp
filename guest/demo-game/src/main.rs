@@ -1,15 +1,17 @@
 use std::panic;
 
 use crucible::{
-    app::{
-        run_loop::{ClientEvent, MainLoopEvent, confirm_app_exit, next_event, request_redraw},
+    base::{
+        env::current_time,
+        log::{LogLevel, log_str},
+        run_loop::{MainLoopEvent, confirm_app_exit, next_event, request_loop_wakeup},
         task::spawn_task,
     },
-    base::log::{LogLevel, log_str},
     gfx::{
         color::Color8,
         texture::{CpuTexture, GpuDrawArgs, GpuTexture},
     },
+    window::run_loop::{ClientEvent, request_redraw},
 };
 use glam::{DVec2, UVec2, Vec2};
 
@@ -47,11 +49,17 @@ async fn main_loop() {
 
     let mut draw_pos = DVec2::ZERO;
 
-    loop {
-        log_str(LogLevel::Info, "Waiting...");
+    request_loop_wakeup(0.0);
 
+    loop {
         match next_event().await {
-            MainLoopEvent::Redraw => {
+            MainLoopEvent::ExitRequested => break,
+            MainLoopEvent::TimerExpired => {
+                request_loop_wakeup(current_time() + 0.1);
+
+                log_str(LogLevel::Info, "Some time has passed!");
+            }
+            MainLoopEvent::Client(ClientEvent::Redraw) => {
                 log_str(LogLevel::Info, "Render!");
 
                 let mut swapchain = GpuTexture::swapchain();
@@ -67,7 +75,6 @@ async fn main_loop() {
 
                 log_str(LogLevel::Info, &format!("{swapchain:?}"));
             }
-            MainLoopEvent::ExitRequested => break,
             MainLoopEvent::Client(ClientEvent::MouseMoved(pos)) => {
                 log_str(LogLevel::Info, &format!("{pos:?}"));
                 draw_pos = pos;

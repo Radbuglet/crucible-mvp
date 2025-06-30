@@ -4,8 +4,8 @@ use anyhow::Context;
 use crucible_renderer::{GfxContext, TEXTURE_FORMAT};
 use futures::executor::block_on;
 use winit::{
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
+    event::{StartCause, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{Window, WindowAttributes, WindowId},
 };
 
@@ -15,6 +15,7 @@ use crate::{
         log::RtLogger,
         main_loop::RtMainLoop,
         renderer::RtRenderer,
+        time::RtTime,
     },
     utils::winit::{FallibleApplicationHandler, run_app_fallible},
 };
@@ -112,6 +113,18 @@ impl FallibleApplicationHandler for App {
         })
     }
 
+    fn new_events(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        cause: StartCause,
+    ) -> anyhow::Result<()> {
+        if matches!(cause, StartCause::ResumeTimeReached { .. }) {
+            RtMainLoop::timer_expired(&mut self.current_game.as_mut().unwrap().store)?;
+        }
+
+        Ok(())
+    }
+
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -178,16 +191,20 @@ impl FallibleApplicationHandler for App {
             return Ok(());
         };
 
-        if RtMainLoop::is_exit_confirmed(&current_game.store) {
+        if RtMainLoop::take_exit_confirmed(&mut current_game.store) {
             event_loop.exit();
 
             return Ok(());
         }
 
-        if RtMainLoop::is_redraw_requested(&current_game.store)
+        if RtMainLoop::take_redraw(&mut current_game.store)
             && let Some(gfx_state) = &mut self.gfx_state
         {
             gfx_state.window.request_redraw();
+        }
+
+        if let Some(deadline) = RtMainLoop::take_wakeup(&mut current_game.store) {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         }
 
         Ok(())
@@ -213,6 +230,7 @@ pub fn run_app() -> anyhow::Result<()> {
     RtLogger::define(&mut linker)?;
     RtRenderer::define(&mut linker)?;
     RtMainLoop::define(&mut linker)?;
+    RtTime::define(&mut linker)?;
 
     // Load module
     tracing::info!("Loading module.");
@@ -238,6 +256,7 @@ pub fn run_app() -> anyhow::Result<()> {
         }),
     )?;
     RtMainLoop::init(&mut store, instance)?;
+    RtTime::init(&mut store, instance)?;
 
     instance
         .get_typed_func::<(u32, u32), u32>(&mut store, "main")
