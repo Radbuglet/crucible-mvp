@@ -4,14 +4,16 @@ use anyhow::Context;
 use crucible_renderer::{GfxContext, TEXTURE_FORMAT};
 use futures::executor::block_on;
 use winit::{
-    event::{StartCause, WindowEvent},
+    event::{KeyEvent, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::PhysicalKey,
     window::{Window, WindowAttributes, WindowId},
 };
 
 use crate::{
     runtime::{
         base::{MainMemory, RtFieldExt, RtModule, RtState},
+        ffi::RtFfi,
         log::RtLogger,
         main_loop::RtMainLoop,
         renderer::RtRenderer,
@@ -177,6 +179,55 @@ impl FallibleApplicationHandler for App {
                     position.y,
                 )?;
             }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key,
+                        logical_key,
+                        text,
+                        location,
+                        state,
+                        repeat,
+                        ..
+                    },
+                ..
+            } => {
+                let store = &mut self.current_game.as_mut().unwrap().store;
+
+                let physical_key = match *physical_key {
+                    PhysicalKey::Code(key_code) => key_code as u32,
+                    PhysicalKey::Unidentified(_) => u32::MAX,
+                };
+
+                let (logical_key_as_str, logical_key_as_str_len, logical_key_as_named) =
+                    match logical_key {
+                        winit::keyboard::Key::Named(named_key) => (0, 0, *named_key as u32),
+                        winit::keyboard::Key::Character(chr) => {
+                            let (base, len) = RtFfi::alloc_str(store, chr)?;
+                            (base, len, 0)
+                        }
+                        winit::keyboard::Key::Unidentified(_) => (0, 0, u32::MAX),
+                        // TODO: marshall
+                        winit::keyboard::Key::Dead(_) => (0, 0, u32::MAX),
+                    };
+
+                let (text, text_len) = RtFfi::alloc_opt_str(store, text.as_deref())?;
+
+                let location = *location as u32;
+
+                RtMainLoop::key_event(
+                    store,
+                    physical_key,
+                    logical_key_as_str,
+                    logical_key_as_str_len,
+                    logical_key_as_named,
+                    text,
+                    text_len,
+                    location,
+                    if state.is_pressed() { 1 } else { 0 },
+                    if *repeat { 1 } else { 0 },
+                )?;
+            }
             WindowEvent::CloseRequested => {
                 RtMainLoop::request_exit(&mut self.current_game.as_mut().unwrap().store)?;
             }
@@ -257,6 +308,7 @@ pub fn run_app() -> anyhow::Result<()> {
     )?;
     RtMainLoop::init(&mut store, instance)?;
     RtTime::init(&mut store, instance)?;
+    RtFfi::init(&mut store, instance)?;
 
     instance
         .get_typed_func::<(u32, u32), u32>(&mut store, "main")

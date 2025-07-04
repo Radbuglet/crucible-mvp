@@ -12,6 +12,7 @@ use super::task::wake_executor;
 // === Event Sink === //
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum MainLoopEvent {
     ExitRequested,
     TimerExpired,

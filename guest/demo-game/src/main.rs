@@ -80,6 +80,10 @@ async fn main_loop() {
                 draw_pos = pos;
                 request_redraw();
             }
+            MainLoopEvent::Client(ClientEvent::KeyEvent(key)) => {
+                log_str(LogLevel::Info, &format!("{key:?}"));
+            }
+            _ => {}
         }
     }
 

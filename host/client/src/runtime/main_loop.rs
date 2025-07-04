@@ -27,7 +27,7 @@ impl RtMainLoop {
         store: &mut wasmtime::Store<RtState>,
         instance: wasmtime::Instance,
     ) -> anyhow::Result<()> {
-        *Self::get_mut(&mut *store) = Some(RtMainLoop {
+        *Self::get_mut(&mut *store) = Some(Self {
             exit_confirmed: false,
             redraw_requested: false,
             wakeup: None,
@@ -128,11 +128,10 @@ macro_rules! define_hooks {
             }
         }
 
+        #[allow(clippy::too_many_arguments)]
         impl RtMainLoop {$(
             pub fn $name(store: &mut wasmtime::Store<RtState>, $($arg_name: $arg,)*) -> anyhow::Result<()> {
-                Self::get(&mut *store)
-                    .as_ref()
-                    .unwrap()
+                Self::get_unwrap(&mut *store)
                     .hooks
                     .$name
                     .clone()
@@ -147,4 +146,15 @@ define_hooks! {
     request_exit(): "crucible_dispatch_request_exit",
     mouse_moved(x: f64, y: f64): "crucible_dispatch_mouse_moved",
     timer_expired(): "crucible_dispatch_timer_expired",
+    key_event(
+        physical_key: u32,
+        logical_key_as_str: u32,
+        logical_key_as_str_len: u32,
+        logical_key_as_named: u32,
+        text: u32,
+        text_len: u32,
+        location: u32,
+        pressed: u32,
+        repeat: u32,
+    ): "crucible_dispatch_key_event"
 }
