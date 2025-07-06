@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["guest/crucible", "guest/demo-game", "host/client", "host/renderer"]
+members = [
+    "guest/crucible",
+    "guest/cruise",
+    "guest/demo-game",
+    "host/client",
+    "host/renderer",
+]
 
 [workspace.dependencies]
 crucible = { path = "guest/crucible" }

@@ -19,7 +19,7 @@ use crate::{
         renderer::RtRenderer,
         time::RtTime,
     },
-    utils::winit::{FallibleApplicationHandler, run_app_fallible},
+    utils::winit::{FallibleApplicationHandler, is_in_live_resize, run_app_fallible},
 };
 
 #[derive(Debug)]
@@ -250,6 +250,7 @@ impl FallibleApplicationHandler for App {
 
         if RtMainLoop::take_redraw(&mut current_game.store)
             && let Some(gfx_state) = &mut self.gfx_state
+            && !is_in_live_resize(&gfx_state.window)
         {
             gfx_state.window.request_redraw();
         }

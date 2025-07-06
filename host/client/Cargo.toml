@@ -11,8 +11,13 @@ derive-where = "1.5.0"
 futures = "0.3.31"
 glam = "0.30.4"
 late-struct = "0.1.0"
+raw-window-handle = "0.6.2"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 wasmtime = "34.0.0"
 wgpu = "25.0.2"
 winit = "0.30.11"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = "0.3.1"
+objc2-quartz-core = "0.3.1"

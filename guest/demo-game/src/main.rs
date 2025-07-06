@@ -2,7 +2,6 @@ use std::panic;
 
 use crucible::{
     base::{
-        env::current_time,
         log::{LogLevel, log_str},
         run_loop::{MainLoopEvent, confirm_app_exit, next_event, request_loop_wakeup},
         task::spawn_task,
@@ -13,7 +12,11 @@ use crucible::{
     },
     window::run_loop::{ClientEvent, request_redraw},
 };
-use glam::{DVec2, UVec2, Vec2};
+use cruise::{
+    arid::World,
+    base::run_loop::{StepResult, StepTimer},
+};
+use glam::{UVec2, Vec2, Vec3};
 
 fn main() {
     panic::set_hook(Box::new(|info| {
@@ -24,64 +27,53 @@ fn main() {
 }
 
 async fn main_loop() {
-    log_str(LogLevel::Info, "Hello, world!");
+    let mut w = World::new();
+    let w = &mut w;
 
-    let izutsumi = {
-        let image = image::load_from_memory_with_format(
-            include_bytes!("demo1.png"),
-            image::ImageFormat::Png,
-        )
-        .unwrap();
+    let mut timer = StepTimer::new(1. / 60.);
 
-        let mut image = image.to_rgba8();
+    let mut my_texture = CpuTexture::new(UVec2::new(100, 100));
+    let my_texture_size = my_texture.size();
+    for (pos, color) in my_texture.pixels_enumerate_mut() {
+        let dist = pos.manhattan_distance(my_texture_size / 2) as f32 / 100.0;
+        let dist = 1. - dist;
 
-        for pixel in image.pixels_mut() {
-            let [r, g, b, a] = pixel.0;
-            *pixel = image::Rgba([b, g, r, a]);
-        }
+        *color = Vec3::splat(dist).into();
+    }
 
-        CpuTexture::from_raw(
-            UVec2::new(image.width(), image.height()),
-            bytemuck::cast_vec(image.into_vec()),
-        )
-        .make_gpu()
-    };
-
-    let mut draw_pos = DVec2::ZERO;
+    let my_texture = my_texture.make_gpu();
 
     request_loop_wakeup(0.0);
 
     loop {
         match next_event().await {
-            MainLoopEvent::ExitRequested => break,
+            MainLoopEvent::ExitRequested => {
+                break;
+            }
             MainLoopEvent::TimerExpired => {
-                request_loop_wakeup(current_time() + 0.1);
+                let StepResult {
+                    times_ticked,
+                    wait_until,
+                } = timer.tick();
 
-                log_str(LogLevel::Info, "Some time has passed!");
-            }
-            MainLoopEvent::Client(ClientEvent::Redraw) => {
-                log_str(LogLevel::Info, "Render!");
+                for _ in 0..times_ticked {
+                    // TODO
+                }
 
-                let mut swapchain = GpuTexture::swapchain();
-                swapchain.clear(Color8::BEIGE);
-
-                swapchain.draw(
-                    GpuDrawArgs::new()
-                        .textured(&izutsumi)
-                        .scale(Vec2::splat(500.0))
-                        .translate(draw_pos.as_vec2())
-                        .tint(Color8::GRAY),
-                );
-
-                log_str(LogLevel::Info, &format!("{swapchain:?}"));
-            }
-            MainLoopEvent::Client(ClientEvent::MouseMoved(pos)) => {
-                log_str(LogLevel::Info, &format!("{pos:?}"));
-                draw_pos = pos;
+                request_loop_wakeup(wait_until);
                 request_redraw();
             }
-            MainLoopEvent::Client(ClientEvent::KeyEvent(key)) => {
-                log_str(LogLevel::Info, &format!("{key:?}"));
+            MainLoopEvent::Client(ClientEvent::Redraw) => {
+                let mut fb = GpuTexture::swapchain();
+
+                fb.clear(Color8::WHITE);
+
+                fb.draw(
+                    GpuDrawArgs::new()
+                        .textured(&my_texture)
+                        .scale(Vec2::splat(500.))
+                        .translate(Vec2::new(100., 200.)),
+                );
             }
             _ => {}
         }
