@@ -1,12 +1,10 @@
 use derive_where::derive_where;
 use late_struct::late_field;
 
-use crate::{
-    runtime::base::{RtFieldExt as _, RtOptFieldExt as _, RtStateNs},
-    utils::{memory::MemoryExt, wasmtime::StoreDataMut},
+use crate::utils::wasm::{
+    MainMemory, MemoryExt as _, RtFieldExt as _, RtOptFieldExt as _, RtState, RtStateNs,
+    StoreDataMut,
 };
-
-use super::base::{MainMemory, RtState};
 
 #[derive_where(Debug)]
 pub struct RtFfi {

@@ -3,9 +3,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use late_struct::late_field;
 
-use crate::runtime::base::{RtFieldExt as _, RtStateNs};
-
-use super::base::{RtModule, RtState};
+use crate::utils::wasm::{RtFieldExt, RtModule, RtState, RtStateNs};
 
 #[derive(Debug)]
 pub struct RtTime {

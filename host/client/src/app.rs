@@ -2,6 +2,10 @@ use std::{cell::RefCell, env, fs, rc::Rc, sync::Arc};
 
 use anyhow::Context;
 use crucible_renderer::{GfxContext, TEXTURE_FORMAT};
+use crucible_shared::{
+    runtime::{RtFfi, RtLogger, RtTime},
+    utils::wasm::{MainMemory, RtFieldExt, RtModule as _, RtState},
+};
 use futures::executor::block_on;
 use winit::{
     event::{KeyEvent, StartCause, WindowEvent},
@@ -11,14 +15,7 @@ use winit::{
 };
 
 use crate::{
-    runtime::{
-        base::{MainMemory, RtFieldExt, RtModule, RtState},
-        ffi::RtFfi,
-        log::RtLogger,
-        main_loop::RtMainLoop,
-        renderer::RtRenderer,
-        time::RtTime,
-    },
+    runtime::{main_loop::RtMainLoop, renderer::RtRenderer},
     utils::winit::{FallibleApplicationHandler, is_in_live_resize, run_app_fallible},
 };
 

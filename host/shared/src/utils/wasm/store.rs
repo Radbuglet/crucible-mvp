@@ -3,7 +3,7 @@ use std::fmt;
 use anyhow::Context as _;
 use late_struct::{LateField, LateInstance, late_field, late_struct};
 
-use crate::utils::wasmtime::{StoreData, StoreDataMut};
+use crate::utils::wasm::{StoreData, StoreDataMut};
 
 // === RtState === //
 

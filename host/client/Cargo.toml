@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.98"
 bytemuck = { version = "1.23.1", features = ["min_const_generics"] }
 crucible-renderer.workspace = true
+crucible-shared.workspace = true
 derive-where = "1.5.0"
 futures = "0.3.31"
 glam = "0.30.4"

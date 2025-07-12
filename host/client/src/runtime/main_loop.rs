@@ -1,16 +1,10 @@
+use crucible_shared::{
+    runtime::RtTime,
+    utils::wasm::{RtFieldExt, RtModule, RtOptFieldExt, RtState, RtStateNs, StoreDataMut},
+};
 use late_struct::late_field;
 
 use std::{fmt, mem, time::Instant};
-
-use crate::{
-    runtime::base::{RtOptFieldExt as _, RtStateNs},
-    utils::wasmtime::StoreDataMut,
-};
-
-use super::{
-    base::{RtFieldExt, RtModule, RtState},
-    time::RtTime,
-};
 
 #[derive(Debug)]
 pub struct RtMainLoop {

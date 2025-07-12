@@ -3,7 +3,7 @@ use std::{fmt, sync::Arc};
 use anyhow::Context as _;
 use late_struct::late_field;
 
-use crate::runtime::base::{MainMemory, RtFieldExt as _, RtModule, RtState, RtStateNs};
+use crate::utils::wasm::{MainMemory, RtFieldExt, RtModule, RtState, RtStateNs};
 
 pub type LogCallback = Arc<dyn Send + Sync + Fn(&mut RtState, &str)>;
 

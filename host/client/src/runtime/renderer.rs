@@ -2,15 +2,13 @@ use std::{cell::RefCell, rc::Rc};
 
 use anyhow::Context;
 use crucible_renderer::GfxContext;
+use crucible_shared::utils::wasm::{
+    MainMemory, MemoryExt as _, RtFieldExt, RtModule, RtState, RtStateNs,
+};
 use glam::{Affine2, U8Vec4, UVec2};
 use late_struct::late_field;
 
-use crate::{
-    runtime::base::RtStateNs,
-    utils::{arena::Arena, memory::MemoryExt},
-};
-
-use super::base::{MainMemory, RtFieldExt, RtModule, RtState};
+use crate::utils::arena::Arena;
 
 #[derive(Debug)]
 pub struct RtRenderer {
