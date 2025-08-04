@@ -1,8 +1,11 @@
+#![allow(clippy::missing_safety_doc)]
+
 use std::{
     error::Error,
     fmt,
     marker::PhantomData,
     mem::{self, MaybeUninit},
+    ops::Range,
 };
 
 use bytemuck::{Pod, TransparentWrapper, Zeroable};
@@ -48,9 +51,72 @@ pub const fn guest_usize_to_u32(val: usize) -> u32 {
     }
 }
 
+// === FfiIndex === //
+
+pub trait FfiIndex<S: FfiSliceIndexable>: Sized + fmt::Debug {
+    type Output;
+
+    fn try_get(&self, slice: S) -> Option<Self::Output>;
+}
+
+pub trait FfiSliceIndexable: Sized + Copy {
+    type RawElem;
+    type RichPtr;
+
+    fn unwrap_slice(me: Self) -> FfiSlice<Self::RawElem>;
+
+    fn wrap_slice(slice: FfiSlice<Self::RawElem>) -> Self;
+
+    fn wrap_ptr(ptr: FfiPtr<Self::RawElem>) -> Self::RichPtr;
+
+    fn try_get<I: FfiIndex<Self>>(self, index: I) -> Option<I::Output> {
+        index.try_get(self)
+    }
+
+    fn get<I: FfiIndex<Self>>(self, index: I) -> I::Output {
+        index.try_get(self).unwrap_or_else(|| {
+            panic!(
+                "index {index:?} out of bounds for slice of length {}",
+                Self::unwrap_slice(self).len()
+            )
+        })
+    }
+}
+
+impl<S: FfiSliceIndexable> FfiIndex<S> for u32 {
+    type Output = S::RichPtr;
+
+    fn try_get(&self, slice: S) -> Option<Self::Output> {
+        let slice = S::unwrap_slice(slice);
+
+        if *self < slice.len() {
+            Some(S::wrap_ptr(slice.base().add(*self)))
+        } else {
+            None
+        }
+    }
+}
+
+impl<S: FfiSliceIndexable> FfiIndex<S> for Range<u32> {
+    type Output = S;
+
+    fn try_get(&self, slice: S) -> Option<Self::Output> {
+        let slice = S::unwrap_slice(slice);
+
+        if self.start < slice.len() && self.end <= slice.len() && self.start <= self.end {
+            Some(S::wrap_slice(FfiSlice::new(
+                slice.base().add(self.start),
+                self.end - self.start,
+            )))
+        } else {
+            None
+        }
+    }
+}
+
 // === FFI Types === //
 
-#[derive(Pod, Zeroable, TransparentWrapper)]
+#[derive(TransparentWrapper)]
 #[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
 #[repr(transparent)]
 #[transparent(u32)]
@@ -58,6 +124,10 @@ pub struct FfiPtr<T> {
     _ty: PhantomData<fn(T) -> T>,
     addr: u32,
 }
+
+unsafe impl<T: 'static> Pod for FfiPtr<T> {}
+
+unsafe impl<T: 'static> Zeroable for FfiPtr<T> {}
 
 impl<T> FfiPtr<T> {
     pub const fn new(addr: u32) -> Self {
@@ -175,6 +245,23 @@ impl<T> FfiSlice<T> {
     }
 }
 
+impl<T> FfiSliceIndexable for FfiSlice<T> {
+    type RawElem = T;
+    type RichPtr = FfiPtr<T>;
+
+    fn unwrap_slice(me: Self) -> FfiSlice<Self::RawElem> {
+        me
+    }
+
+    fn wrap_slice(slice: FfiSlice<Self::RawElem>) -> Self {
+        slice
+    }
+
+    fn wrap_ptr(ptr: FfiPtr<Self::RawElem>) -> Self::RichPtr {
+        ptr
+    }
+}
+
 impl<T: Pod> FfiSlice<T> {
     pub fn read(self, cx: &impl HostMemory) -> Result<&[T], HostMarshalError> {
         cx.read(self.base().addr(), self.len())
@@ -199,16 +286,6 @@ impl<T> Iterator for FfiSlice<T> {
 
         Some(ptr)
     }
-}
-
-#[repr(C)]
-pub struct FfiOption<T> {
-    present: bool,
-    value: MaybeUninit<T>,
-}
-
-impl<T> FfiOption<T> {
-    // TODO
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
@@ -260,6 +337,12 @@ macro_rules! ffi_offset {
 
 // === Marshal Trait === //
 
+pub type FfiOf<M> = <<M as Marshal>::Strategy as Strategy>::Ffi;
+pub type GuestDestOf<M> = <<M as Marshal>::Strategy as Strategy>::GuestDest;
+pub type GuestSrcOf<'a, M> = <<M as Marshal>::Strategy as Strategy>::GuestSrc<'a>;
+pub type HostDestOf<M> = <<M as Marshal>::Strategy as Strategy>::HostDest;
+pub type HostSrcOf<'a, M> = <<M as Marshal>::Strategy as Strategy>::HostSrc<'a>;
+
 #[derive(Debug, Clone)]
 pub struct HostMarshalError;
 
@@ -283,7 +366,7 @@ pub trait HostAlloc: HostMemoryMut {
     fn alloc(&mut self, align: u32, size: u32) -> Result<FfiPtr<()>, HostMarshalError>;
 }
 
-pub trait Marshal {
+pub trait Marshal: Sized + 'static {
     type Strategy: Strategy;
 }
 
@@ -296,14 +379,14 @@ pub unsafe trait Strategy: Sized + 'static + Marshal<Strategy = Self> {
     ///
     /// ## Safety
     ///
-    /// Must be transmutable from [`Repr`](Marshal::Repr).
+    /// Must be transmutable from [`Repr`](Marshal::Repr) when the target is a guest target.
     type GuestDest;
 
     /// The type the value should be encoded from on the guest.
     ///
     /// ## Safety
     ///
-    /// Must be transmutable to [`Repr`](Marshal::Repr).
+    /// Must be transmutable to [`Repr`](Marshal::Repr) when the target is a guest target.
     type GuestSrc<'a>;
 
     /// The type the value should be decoded as on the host.
@@ -334,7 +417,6 @@ impl<T: Pod> Marshal for PodMarshalStrategy<T> {
     type Strategy = Self;
 }
 
-// Safety: trivial identity transmute
 unsafe impl<T: Pod> Strategy for PodMarshalStrategy<T> {
     type Ffi = T;
     type GuestDest = T;
@@ -384,12 +466,140 @@ alias_pod_marshal! {
     f64,
 }
 
-// === ConvertMarshalStrategy === //
+// === BoolMarshalStrategy === //
 
-// TODO
+#[non_exhaustive]
+pub struct BoolMarshalStrategy;
+
+impl Marshal for BoolMarshalStrategy {
+    type Strategy = Self;
+}
+
+unsafe impl Strategy for BoolMarshalStrategy {
+    type Ffi = bool;
+    type GuestDest = bool;
+    type GuestSrc<'a> = bool;
+    type HostDest = bool;
+    type HostSrc<'a> = bool;
+
+    fn decode_host(
+        cx: &impl HostMemory,
+        ptr: FfiPtr<Self::Ffi>,
+    ) -> Result<Self::HostDest, HostMarshalError> {
+        match *ptr.cast::<u8>().read(cx)? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(HostMarshalError),
+        }
+    }
+
+    fn encode_host(
+        cx: &mut impl HostAlloc,
+        out_ptr: FfiPtr<Self::Ffi>,
+        value: &Self::HostSrc<'_>,
+    ) -> Result<(), HostMarshalError> {
+        *out_ptr.cast::<u8>().write(cx)? = *value as u8;
+
+        Ok(())
+    }
+}
+
+impl Marshal for bool {
+    type Strategy = BoolMarshalStrategy;
+}
+
+// === CharMarshalStrategy === //
+
+#[non_exhaustive]
+pub struct CharMarshalStrategy;
+
+impl Marshal for CharMarshalStrategy {
+    type Strategy = Self;
+}
+
+unsafe impl Strategy for CharMarshalStrategy {
+    type Ffi = char;
+    type GuestDest = char;
+    type GuestSrc<'a> = char;
+    type HostDest = char;
+    type HostSrc<'a> = char;
+
+    fn decode_host(
+        cx: &impl HostMemory,
+        ptr: FfiPtr<Self::Ffi>,
+    ) -> Result<Self::HostDest, HostMarshalError> {
+        char::try_from(*ptr.cast::<u32>().read(cx)?).map_err(|_| HostMarshalError)
+    }
+
+    fn encode_host(
+        cx: &mut impl HostAlloc,
+        out_ptr: FfiPtr<Self::Ffi>,
+        value: &Self::HostSrc<'_>,
+    ) -> Result<(), HostMarshalError> {
+        *out_ptr.cast::<u32>().write(cx)? = *value as u32;
+
+        Ok(())
+    }
+}
+
+impl Marshal for char {
+    type Strategy = CharMarshalStrategy;
+}
 
 // === OptionMarshalStrategy === //
 
+// Views
+#[repr(C)]
+pub struct FfiOption<T> {
+    present: bool,
+    value: MaybeUninit<T>,
+}
+
+impl<T> FfiOption<T> {
+    pub fn new(value: Option<T>) -> Self {
+        match value {
+            Some(value) => Self::some(value),
+            None => Self::none(),
+        }
+    }
+
+    pub const fn some(value: T) -> Self {
+        Self {
+            present: true,
+            value: MaybeUninit::new(value),
+        }
+    }
+
+    pub const fn none() -> Self {
+        Self {
+            present: false,
+            value: MaybeUninit::uninit(),
+        }
+    }
+
+    pub const fn decode(self) -> Option<T> {
+        match self.present {
+            true => Some(unsafe { MaybeUninit::assume_init(self.value) }),
+            false => None,
+        }
+    }
+
+    pub const fn decode_ref(&self) -> Option<&T> {
+        match self.present {
+            true => Some(unsafe { MaybeUninit::assume_init_ref(&self.value) }),
+            false => None,
+        }
+    }
+
+    pub const fn decode_mut(&mut self) -> Option<&mut T> {
+        match self.present {
+            true => Some(unsafe { MaybeUninit::assume_init_mut(&mut self.value) }),
+            false => None,
+        }
+    }
+}
+
+// Strategy
 pub struct OptionMarshalStrategy<T: Strategy> {
     _ty: PhantomData<fn(T) -> T>,
 }
@@ -398,7 +608,6 @@ impl<T: Strategy> Marshal for OptionMarshalStrategy<T> {
     type Strategy = Self;
 }
 
-// Safety: trivial transmute with induction over `T: Strategy` bound.
 unsafe impl<T: Strategy> Strategy for OptionMarshalStrategy<T> {
     type Ffi = FfiOption<T::Ffi>;
     type GuestDest = FfiOption<T::GuestDest>;
@@ -450,49 +659,182 @@ impl<T: Marshal> Marshal for Option<T> {
     type Strategy = OptionMarshalStrategy<T::Strategy>;
 }
 
-// === SliceMarshalStrategy === //
+// === BoxMarshalStrategy === //
+
+// Views
+#[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct HostPtr<T: Strategy> {
+    ptr: FfiPtr<T::Ffi>,
+}
+
+impl<T: Strategy> HostPtr<T> {
+    pub const fn new(ptr: FfiPtr<T::Ffi>) -> Self {
+        Self { ptr }
+    }
+
+    pub const fn ptr(self) -> FfiPtr<T::Ffi> {
+        self.ptr
+    }
+
+    pub fn decode(self, cx: &impl HostMemory) -> Result<T::HostDest, HostMarshalError> {
+        T::decode_host(cx, self.ptr)
+    }
+}
+
+// Strategy
+pub struct BoxMarshalStrategy<T: Strategy> {
+    _ty: PhantomData<fn(T) -> T>,
+}
+
+impl<T: Strategy> Marshal for BoxMarshalStrategy<T> {
+    type Strategy = Self;
+}
+
+unsafe impl<T: Strategy> Strategy for BoxMarshalStrategy<T> {
+    type Ffi = FfiPtr<T::Ffi>;
+    type GuestDest = Box<T::GuestDest>;
+    type GuestSrc<'a> = &'a T::GuestSrc<'a>;
+    type HostDest = HostPtr<T>;
+    type HostSrc<'a> = &'a T::HostSrc<'a>;
+
+    fn decode_host(
+        cx: &impl HostMemory,
+        ptr: FfiPtr<Self::Ffi>,
+    ) -> Result<Self::HostDest, HostMarshalError> {
+        Ok(HostPtr {
+            ptr: *ptr.read(cx)?,
+        })
+    }
+
+    fn encode_host(
+        cx: &mut impl HostAlloc,
+        out_ptr: FfiPtr<Self::Ffi>,
+        value: &Self::HostSrc<'_>,
+    ) -> Result<(), HostMarshalError> {
+        let allocated = cx
+            .alloc(align_of_u32::<T::Ffi>(), size_of_u32::<T::Ffi>())?
+            .cast::<T::Ffi>();
+
+        T::encode_host(cx, allocated, value)?;
+
+        *out_ptr.write(cx)? = allocated;
+
+        Ok(())
+    }
+}
+
+impl<T: Marshal> Marshal for Box<T> {
+    type Strategy = BoxMarshalStrategy<T::Strategy>;
+}
+
+// === VecMarshalStrategy === //
 
 // Views
 #[repr(transparent)]
 pub struct GuestSlice<T> {
     _ty: PhantomData<Vec<T>>,
-    inner: FfiSlice<T>,
+    slice: FfiSlice<T>,
 }
 
 impl<T> GuestSlice<T> {
-    // TODO
+    pub unsafe fn new_unchecked(slice: FfiSlice<T>) -> Self {
+        Self {
+            _ty: PhantomData,
+            slice,
+        }
+    }
+
+    pub fn decode(self) -> Vec<T> {
+        unsafe {
+            Vec::from_raw_parts(
+                self.slice.guest_ptr().cast(),
+                self.slice.guest_ptr().len(),
+                self.slice.guest_ptr().len(),
+            )
+        }
+    }
+
+    pub fn decode_ref(&self) -> &[T] {
+        unsafe { &*self.slice.guest_ptr() }
+    }
+
+    pub fn decode_mut(&mut self) -> &mut [T] {
+        unsafe { &mut *self.slice.guest_ptr() }
+    }
 }
 
+#[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct GuestSliceRef<'a, T> {
     _ty: PhantomData<&'a [T]>,
-    inner: FfiSlice<T>,
+    slice: FfiSlice<T>,
 }
 
-impl<T> GuestSliceRef<'_, T> {
-    // TODO
+impl<'a, T> GuestSliceRef<'a, T> {
+    pub fn new(values: &'a [T]) -> Self {
+        Self {
+            _ty: PhantomData,
+            slice: FfiSlice::new_guest(values),
+        }
+    }
+
+    pub fn decode(self) -> &'a [T] {
+        unsafe { &*self.slice.guest_ptr() }
+    }
 }
 
+#[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
+#[repr(transparent)]
 pub struct HostSlice<T: Strategy> {
-    inner: FfiSlice<T::Ffi>,
+    slice: FfiSlice<T::Ffi>,
 }
 
 impl<T: Strategy> HostSlice<T> {
-    // TODO
+    pub const fn new(slice: FfiSlice<T::Ffi>) -> Self {
+        Self { slice }
+    }
+
+    pub const fn slice(self) -> FfiSlice<T::Ffi> {
+        self.slice
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.slice.is_empty()
+    }
+
+    pub const fn len(self) -> u32 {
+        self.slice.len()
+    }
+}
+
+impl<T: Strategy> FfiSliceIndexable for HostSlice<T> {
+    type RawElem = T::Ffi;
+    type RichPtr = HostPtr<T>;
+
+    fn unwrap_slice(me: Self) -> FfiSlice<Self::RawElem> {
+        me.slice()
+    }
+
+    fn wrap_slice(slice: FfiSlice<Self::RawElem>) -> Self {
+        Self::new(slice)
+    }
+
+    fn wrap_ptr(ptr: FfiPtr<Self::RawElem>) -> Self::RichPtr {
+        HostPtr::new(ptr)
+    }
 }
 
 // Strategy
-pub struct SliceMarshalStrategy<T: Strategy> {
+pub struct VecMarshalStrategy<T: Strategy> {
     _ty: PhantomData<fn(T) -> T>,
 }
 
-impl<T: Strategy> Marshal for SliceMarshalStrategy<T> {
+impl<T: Strategy> Marshal for VecMarshalStrategy<T> {
     type Strategy = Self;
 }
 
-// Safety: `repr(transparent)` transmute with semantic validity provided by induction over
-// `T: Strategy` bound.
-unsafe impl<T: Strategy> Strategy for SliceMarshalStrategy<T> {
+unsafe impl<T: Strategy> Strategy for VecMarshalStrategy<T> {
     type Ffi = FfiSlice<T::Ffi>;
     type GuestDest = GuestSlice<T::GuestDest>;
     type GuestSrc<'a> = GuestSliceRef<'a, T::GuestSrc<'a>>;
@@ -503,9 +845,7 @@ unsafe impl<T: Strategy> Strategy for SliceMarshalStrategy<T> {
         cx: &impl HostMemory,
         ptr: FfiPtr<Self::Ffi>,
     ) -> Result<Self::HostDest, HostMarshalError> {
-        Ok(HostSlice {
-            inner: *ptr.read(cx)?,
-        })
+        Ok(HostSlice::new(*ptr.read(cx)?))
     }
 
     fn encode_host(
@@ -532,9 +872,10 @@ unsafe impl<T: Strategy> Strategy for SliceMarshalStrategy<T> {
     }
 }
 
-impl<T: Marshal> Marshal for [T] {
-    type Strategy = SliceMarshalStrategy<T::Strategy>;
+impl<T: Marshal> Marshal for Vec<T> {
+    type Strategy = VecMarshalStrategy<T::Strategy>;
 }
+
 // === Struct Marshalling === //
 
 // VariantSelector
@@ -676,17 +1017,4 @@ macro_rules! marshal_struct {
             }
         }
     )*};
-}
-
-mod demo {
-    marshal_struct! {
-        pub struct WheeReq {
-            is_dumb: u8,
-            my_values: [Whee2],
-        }
-
-        pub struct Whee2 {
-            v: [i32],
-        }
-    }
 }
