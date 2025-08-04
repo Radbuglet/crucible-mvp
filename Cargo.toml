@@ -8,12 +8,14 @@ members = [
     "host/renderer",
     "host/server",
     "host/shared",
+    "shared/wasmlink",
 ]
 
 [workspace.dependencies]
 crucible = { path = "guest/crucible" }
 crucible-renderer = { path = "host/renderer" }
 crucible-shared = { path = "host/shared" }
+wasmlink = { path = "shared/wasmlink" }
 
 [profile.dev.package."*"]
 opt-level = 2
