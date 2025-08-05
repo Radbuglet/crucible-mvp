@@ -337,11 +337,10 @@ macro_rules! ffi_offset {
 
 // === Marshal Trait === //
 
-pub type FfiOf<M> = <<M as Marshal>::Strategy as Strategy>::Ffi;
-pub type GuestDestOf<M> = <<M as Marshal>::Strategy as Strategy>::GuestDest;
-pub type GuestSrcOf<'a, M> = <<M as Marshal>::Strategy as Strategy>::GuestSrc<'a>;
-pub type HostDestOf<M> = <<M as Marshal>::Strategy as Strategy>::HostDest;
-pub type HostSrcOf<'a, M> = <<M as Marshal>::Strategy as Strategy>::HostSrc<'a>;
+pub type GuestboundOf<M> = <<M as Marshal>::Strategy as Strategy>::Guestbound;
+pub type HostboundOf<'a, M> = <<M as Marshal>::Strategy as Strategy>::Hostbound<'a>;
+pub type HostboundViewOf<M> = <<M as Marshal>::Strategy as Strategy>::HostboundView;
+pub type GuestboundViewOf<'a, M> = <<M as Marshal>::Strategy as Strategy>::GuestboundView<'a>;
 
 #[derive(Debug, Clone)]
 pub struct HostMarshalError;
@@ -370,40 +369,30 @@ pub trait Marshal: Sized + 'static {
     type Strategy: Strategy;
 }
 
-pub unsafe trait Strategy: Sized + 'static + Marshal<Strategy = Self> {
-    /// An FFI-safe representation of the value. This type should have the same layout between guest
-    /// and host. This isn't exactly a [`Pod`] since it may have padding.
-    type Ffi;
+pub trait Strategy: Sized + 'static + Marshal<Strategy = Self> {
+    /// An FFI-safe representation of the value written by the guest into its own memory and
+    /// interpreted on the host.
+    type Hostbound<'a>;
 
-    /// The type the value should be decoded as on the guest.
-    ///
-    /// ## Safety
-    ///
-    /// Must be transmutable from [`Repr`](Marshal::Repr) when the target is a guest target.
-    type GuestDest;
+    /// A view of a hostbound value on the host.
+    type HostboundView;
 
-    /// The type the value should be encoded from on the guest.
-    ///
-    /// ## Safety
-    ///
-    /// Must be transmutable to [`Repr`](Marshal::Repr) when the target is a guest target.
-    type GuestSrc<'a>;
+    /// An FFI-safe representation of the value written by the host into the guest's memory and
+    /// interpreted by the guest.
+    type Guestbound;
 
-    /// The type the value should be decoded as on the host.
-    type HostDest;
+    /// A view of a guestbound value to be encoded by host.
+    type GuestboundView<'a>;
 
-    /// The type the value should be encoded from on the host.
-    type HostSrc<'a>;
-
-    fn decode_host(
+    fn decode_hostbound(
         cx: &impl HostMemory,
-        ptr: FfiPtr<Self::Ffi>,
-    ) -> Result<Self::HostDest, HostMarshalError>;
+        ptr: FfiPtr<Self::Hostbound<'static>>,
+    ) -> Result<Self::HostboundView, HostMarshalError>;
 
-    fn encode_host(
+    fn encode_guestbound(
         cx: &mut impl HostAlloc,
-        out_ptr: FfiPtr<Self::Ffi>,
-        value: &Self::HostSrc<'_>,
+        out_ptr: FfiPtr<Self::Guestbound>,
+        value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError>;
 }
 
@@ -417,24 +406,23 @@ impl<T: Pod> Marshal for PodMarshalStrategy<T> {
     type Strategy = Self;
 }
 
-unsafe impl<T: Pod> Strategy for PodMarshalStrategy<T> {
-    type Ffi = T;
-    type GuestDest = T;
-    type GuestSrc<'a> = T;
-    type HostDest = T;
-    type HostSrc<'a> = T;
+impl<T: Pod> Strategy for PodMarshalStrategy<T> {
+    type Hostbound<'a> = T;
+    type HostboundView = T;
+    type Guestbound = T;
+    type GuestboundView<'a> = T;
 
-    fn decode_host(
+    fn decode_hostbound(
         cx: &impl HostMemory,
-        ptr: FfiPtr<Self::Ffi>,
-    ) -> Result<Self::HostDest, HostMarshalError> {
+        ptr: FfiPtr<Self::Hostbound<'static>>,
+    ) -> Result<Self::HostboundView, HostMarshalError> {
         ptr.read(cx).copied()
     }
 
-    fn encode_host(
+    fn encode_guestbound(
         cx: &mut impl HostAlloc,
-        out_ptr: FfiPtr<Self::Ffi>,
-        value: &Self::HostSrc<'_>,
+        out_ptr: FfiPtr<Self::Guestbound>,
+        value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError> {
         *out_ptr.write(cx)? = *value;
 
@@ -475,17 +463,16 @@ impl Marshal for BoolMarshalStrategy {
     type Strategy = Self;
 }
 
-unsafe impl Strategy for BoolMarshalStrategy {
-    type Ffi = bool;
-    type GuestDest = bool;
-    type GuestSrc<'a> = bool;
-    type HostDest = bool;
-    type HostSrc<'a> = bool;
+impl Strategy for BoolMarshalStrategy {
+    type Hostbound<'a> = bool;
+    type HostboundView = bool;
+    type Guestbound = bool;
+    type GuestboundView<'a> = bool;
 
-    fn decode_host(
+    fn decode_hostbound(
         cx: &impl HostMemory,
-        ptr: FfiPtr<Self::Ffi>,
-    ) -> Result<Self::HostDest, HostMarshalError> {
+        ptr: FfiPtr<Self::Hostbound<'static>>,
+    ) -> Result<Self::HostboundView, HostMarshalError> {
         match *ptr.cast::<u8>().read(cx)? {
             0 => Ok(false),
             1 => Ok(true),
@@ -493,10 +480,10 @@ unsafe impl Strategy for BoolMarshalStrategy {
         }
     }
 
-    fn encode_host(
+    fn encode_guestbound(
         cx: &mut impl HostAlloc,
-        out_ptr: FfiPtr<Self::Ffi>,
-        value: &Self::HostSrc<'_>,
+        out_ptr: FfiPtr<Self::Guestbound>,
+        value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError> {
         *out_ptr.cast::<u8>().write(cx)? = *value as u8;
 
@@ -517,24 +504,23 @@ impl Marshal for CharMarshalStrategy {
     type Strategy = Self;
 }
 
-unsafe impl Strategy for CharMarshalStrategy {
-    type Ffi = char;
-    type GuestDest = char;
-    type GuestSrc<'a> = char;
-    type HostDest = char;
-    type HostSrc<'a> = char;
+impl Strategy for CharMarshalStrategy {
+    type Hostbound<'a> = char;
+    type HostboundView = char;
+    type Guestbound = char;
+    type GuestboundView<'a> = char;
 
-    fn decode_host(
+    fn decode_hostbound(
         cx: &impl HostMemory,
-        ptr: FfiPtr<Self::Ffi>,
-    ) -> Result<Self::HostDest, HostMarshalError> {
+        ptr: FfiPtr<Self::Hostbound<'static>>,
+    ) -> Result<Self::HostboundView, HostMarshalError> {
         char::try_from(*ptr.cast::<u32>().read(cx)?).map_err(|_| HostMarshalError)
     }
 
-    fn encode_host(
+    fn encode_guestbound(
         cx: &mut impl HostAlloc,
-        out_ptr: FfiPtr<Self::Ffi>,
-        value: &Self::HostSrc<'_>,
+        out_ptr: FfiPtr<Self::Guestbound>,
+        value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError> {
         *out_ptr.cast::<u32>().write(cx)? = *value as u32;
 
@@ -608,17 +594,16 @@ impl<T: Strategy> Marshal for OptionMarshalStrategy<T> {
     type Strategy = Self;
 }
 
-unsafe impl<T: Strategy> Strategy for OptionMarshalStrategy<T> {
-    type Ffi = FfiOption<T::Ffi>;
-    type GuestDest = FfiOption<T::GuestDest>;
-    type GuestSrc<'a> = FfiOption<T::GuestSrc<'a>>;
-    type HostDest = Option<T::HostDest>;
-    type HostSrc<'a> = Option<T::HostSrc<'a>>;
+impl<T: Strategy> Strategy for OptionMarshalStrategy<T> {
+    type Hostbound<'a> = FfiOption<T::Hostbound<'a>>;
+    type HostboundView = Option<T::HostboundView>;
+    type Guestbound = FfiOption<T::Guestbound>;
+    type GuestboundView<'a> = Option<T::GuestboundView<'a>>;
 
-    fn decode_host(
+    fn decode_hostbound(
         cx: &impl HostMemory,
-        ptr: FfiPtr<Self::Ffi>,
-    ) -> Result<Self::HostDest, HostMarshalError> {
+        ptr: FfiPtr<Self::Hostbound<'static>>,
+    ) -> Result<Self::HostboundView, HostMarshalError> {
         let is_present = *ptr
             .field(ffi_offset!(FfiOption<T>, present))
             .cast::<u8>()
@@ -628,15 +613,15 @@ unsafe impl<T: Strategy> Strategy for OptionMarshalStrategy<T> {
             return Ok(None);
         }
 
-        let value = T::decode_host(cx, ptr.field(ffi_offset!(FfiOption<T>, value)).cast())?;
+        let value = T::decode_hostbound(cx, ptr.field(ffi_offset!(FfiOption<T>, value)).cast())?;
 
         Ok(Some(value))
     }
 
-    fn encode_host(
+    fn encode_guestbound(
         cx: &mut impl HostAlloc,
-        out_ptr: FfiPtr<Self::Ffi>,
-        value: &Self::HostSrc<'_>,
+        out_ptr: FfiPtr<Self::Guestbound>,
+        value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError> {
         *out_ptr
             .field(ffi_offset!(FfiOption<T>, present))
@@ -644,7 +629,7 @@ unsafe impl<T: Strategy> Strategy for OptionMarshalStrategy<T> {
             .write(cx)? = value.is_some() as u8;
 
         if let Some(value) = value {
-            T::encode_host(
+            T::encode_guestbound(
                 cx,
                 out_ptr.field(ffi_offset!(FfiOption<T>, value)).cast(),
                 value,
@@ -665,20 +650,20 @@ impl<T: Marshal> Marshal for Option<T> {
 #[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct HostPtr<T: Strategy> {
-    ptr: FfiPtr<T::Ffi>,
+    ptr: FfiPtr<T::Hostbound<'static>>,
 }
 
 impl<T: Strategy> HostPtr<T> {
-    pub const fn new(ptr: FfiPtr<T::Ffi>) -> Self {
+    pub const fn new(ptr: FfiPtr<T::Hostbound<'static>>) -> Self {
         Self { ptr }
     }
 
-    pub const fn ptr(self) -> FfiPtr<T::Ffi> {
+    pub const fn ptr(self) -> FfiPtr<T::Hostbound<'static>> {
         self.ptr
     }
 
-    pub fn decode(self, cx: &impl HostMemory) -> Result<T::HostDest, HostMarshalError> {
-        T::decode_host(cx, self.ptr)
+    pub fn decode(self, cx: &impl HostMemory) -> Result<T::HostboundView, HostMarshalError> {
+        T::decode_hostbound(cx, self.ptr)
     }
 }
 
@@ -691,34 +676,36 @@ impl<T: Strategy> Marshal for BoxMarshalStrategy<T> {
     type Strategy = Self;
 }
 
-unsafe impl<T: Strategy> Strategy for BoxMarshalStrategy<T> {
-    type Ffi = FfiPtr<T::Ffi>;
-    type GuestDest = Box<T::GuestDest>;
-    type GuestSrc<'a> = &'a T::GuestSrc<'a>;
-    type HostDest = HostPtr<T>;
-    type HostSrc<'a> = &'a T::HostSrc<'a>;
+impl<T: Strategy> Strategy for BoxMarshalStrategy<T> {
+    type Hostbound<'a> = &'a T::Hostbound<'a>;
+    type HostboundView = HostPtr<T>;
+    type Guestbound = Box<T::Guestbound>;
+    type GuestboundView<'a> = &'a T::GuestboundView<'a>;
 
-    fn decode_host(
+    fn decode_hostbound(
         cx: &impl HostMemory,
-        ptr: FfiPtr<Self::Ffi>,
-    ) -> Result<Self::HostDest, HostMarshalError> {
+        ptr: FfiPtr<Self::Hostbound<'static>>,
+    ) -> Result<Self::HostboundView, HostMarshalError> {
         Ok(HostPtr {
-            ptr: *ptr.read(cx)?,
+            ptr: *ptr.cast::<FfiPtr<T::Hostbound<'static>>>().read(cx)?,
         })
     }
 
-    fn encode_host(
+    fn encode_guestbound(
         cx: &mut impl HostAlloc,
-        out_ptr: FfiPtr<Self::Ffi>,
-        value: &Self::HostSrc<'_>,
+        out_ptr: FfiPtr<Self::Guestbound>,
+        value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError> {
         let allocated = cx
-            .alloc(align_of_u32::<T::Ffi>(), size_of_u32::<T::Ffi>())?
-            .cast::<T::Ffi>();
+            .alloc(
+                align_of_u32::<T::Guestbound>(),
+                size_of_u32::<T::Guestbound>(),
+            )?
+            .cast::<T::Guestbound>();
 
-        T::encode_host(cx, allocated, value)?;
+        T::encode_guestbound(cx, allocated, value)?;
 
-        *out_ptr.write(cx)? = allocated;
+        *out_ptr.cast::<FfiPtr<T::Guestbound>>().write(cx)? = allocated;
 
         Ok(())
     }
@@ -787,15 +774,15 @@ impl<'a, T> GuestSliceRef<'a, T> {
 #[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct HostSlice<T: Strategy> {
-    slice: FfiSlice<T::Ffi>,
+    slice: FfiSlice<T::Hostbound<'static>>,
 }
 
 impl<T: Strategy> HostSlice<T> {
-    pub const fn new(slice: FfiSlice<T::Ffi>) -> Self {
+    pub const fn new(slice: FfiSlice<T::Hostbound<'static>>) -> Self {
         Self { slice }
     }
 
-    pub const fn slice(self) -> FfiSlice<T::Ffi> {
+    pub const fn slice(self) -> FfiSlice<T::Hostbound<'static>> {
         self.slice
     }
 
@@ -809,7 +796,7 @@ impl<T: Strategy> HostSlice<T> {
 }
 
 impl<T: Strategy> FfiSliceIndexable for HostSlice<T> {
-    type RawElem = T::Ffi;
+    type RawElem = T::Hostbound<'static>;
     type RichPtr = HostPtr<T>;
 
     fn unwrap_slice(me: Self) -> FfiSlice<Self::RawElem> {
@@ -834,39 +821,40 @@ impl<T: Strategy> Marshal for VecMarshalStrategy<T> {
     type Strategy = Self;
 }
 
-unsafe impl<T: Strategy> Strategy for VecMarshalStrategy<T> {
-    type Ffi = FfiSlice<T::Ffi>;
-    type GuestDest = GuestSlice<T::GuestDest>;
-    type GuestSrc<'a> = GuestSliceRef<'a, T::GuestSrc<'a>>;
-    type HostDest = HostSlice<T>;
-    type HostSrc<'a> = &'a [T::HostSrc<'a>];
+impl<T: Strategy> Strategy for VecMarshalStrategy<T> {
+    type Hostbound<'a> = GuestSliceRef<'a, T::Hostbound<'a>>;
+    type HostboundView = HostSlice<T>;
+    type Guestbound = GuestSlice<T::Guestbound>;
+    type GuestboundView<'a> = &'a [T::GuestboundView<'a>];
 
-    fn decode_host(
+    fn decode_hostbound(
         cx: &impl HostMemory,
-        ptr: FfiPtr<Self::Ffi>,
-    ) -> Result<Self::HostDest, HostMarshalError> {
-        Ok(HostSlice::new(*ptr.read(cx)?))
+        ptr: FfiPtr<Self::Hostbound<'static>>,
+    ) -> Result<Self::HostboundView, HostMarshalError> {
+        Ok(HostSlice::new(
+            *ptr.cast::<FfiSlice<T::Hostbound<'static>>>().read(cx)?,
+        ))
     }
 
-    fn encode_host(
+    fn encode_guestbound(
         cx: &mut impl HostAlloc,
-        out_ptr: FfiPtr<Self::Ffi>,
-        value: &Self::HostSrc<'_>,
+        out_ptr: FfiPtr<Self::Guestbound>,
+        value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError> {
         let allocated = cx.alloc(
-            align_of_u32::<T::Ffi>(),
-            size_of_u32::<T::Ffi>()
+            align_of_u32::<T::Guestbound>(),
+            size_of_u32::<T::Guestbound>()
                 .checked_mul(u32::try_from(value.len()).expect("too many elements"))
                 .expect("slice too big for guest"),
         )?;
 
-        let allocated = FfiSlice::<T::Ffi>::new(allocated.cast(), value.len() as u32);
+        let allocated = FfiSlice::<T::Guestbound>::new(allocated.cast(), value.len() as u32);
 
         for (value, out_ptr) in value.iter().zip(allocated) {
-            T::encode_host(cx, out_ptr, value)?;
+            T::encode_guestbound(cx, out_ptr, value)?;
         }
 
-        *out_ptr.write(cx)? = allocated;
+        *out_ptr.cast::<FfiSlice<T::Guestbound>>().write(cx)? = allocated;
 
         Ok(())
     }
@@ -894,49 +882,42 @@ const _: () = {
     }
 };
 
-#[non_exhaustive]
-pub struct FfiVariant;
-
-impl VariantSelector for FfiVariant {
-    type Output<T: Strategy> = T::Ffi;
-}
-
-#[non_exhaustive]
-pub struct GuestDestVariant;
-
-impl VariantSelector for GuestDestVariant {
-    type Output<T: Strategy> = T::GuestDest;
-}
-
-pub struct GuestSrcVariant<'a> {
+pub struct HostboundVariant<'a> {
     _ty: PhantomData<&'a ()>,
 }
 
-impl<'a> VariantSelector for GuestSrcVariant<'a> {
-    type Output<T: Strategy> = T::GuestSrc<'a>;
+impl<'a> VariantSelector for HostboundVariant<'a> {
+    type Output<T: Strategy> = T::Hostbound<'a>;
 }
 
 #[non_exhaustive]
-pub struct HostDestVariant;
+pub struct HostboundViewVariant;
 
-impl VariantSelector for HostDestVariant {
-    type Output<T: Strategy> = T::HostDest;
+impl VariantSelector for HostboundViewVariant {
+    type Output<T: Strategy> = T::HostboundView;
 }
 
-pub struct HostSrcVariant<'a> {
+#[non_exhaustive]
+pub struct GuestboundVariant;
+
+impl VariantSelector for GuestboundVariant {
+    type Output<T: Strategy> = T::Guestbound;
+}
+
+pub struct GuestboundViewVariant<'a> {
     _ty: PhantomData<&'a ()>,
 }
 
-impl<'a> VariantSelector for HostSrcVariant<'a> {
-    type Output<T: Strategy> = T::HostSrc<'a>;
+impl<'a> VariantSelector for GuestboundViewVariant<'a> {
+    type Output<T: Strategy> = T::GuestboundView<'a>;
 }
 
 // Macro
 pub mod marshal_struct_internals {
     pub use {
         super::{
-            FfiPtr, FfiVariant, GuestDestVariant, GuestSrcVariant, HostAlloc, HostDestVariant,
-            HostMarshalError, HostMemory, HostSrcVariant, MarkerVariant, Marshal, Strategy,
+            FfiPtr, GuestboundVariant, GuestboundViewVariant, HostAlloc, HostMarshalError,
+            HostMemory, HostboundVariant, HostboundViewVariant, MarkerVariant, Marshal, Strategy,
             VariantSelector, ffi_offset,
         },
         std::result::Result,
@@ -956,6 +937,7 @@ macro_rules! marshal_struct {
         }
     )*) => {$(
         $(#[$($item_meta:tt)*])*
+        #[repr(C)]
         $item_vis struct $item_name<
             V: $crate::marshal_struct_internals::VariantSelector = $crate::marshal_struct_internals::MarkerVariant
         > {$(
@@ -969,45 +951,42 @@ macro_rules! marshal_struct {
             type Strategy = Self;
         }
 
-        unsafe impl $crate::marshal_struct_internals::Strategy for $item_name {
-            type Ffi = $item_name<$crate::marshal_struct_internals::FfiVariant>;
-            type GuestDest = $item_name<$crate::marshal_struct_internals::GuestDestVariant>;
-            type GuestSrc<'a> = $item_name<$crate::marshal_struct_internals::GuestSrcVariant<'a>>;
-            type HostDest = $item_name<$crate::marshal_struct_internals::HostDestVariant>;
-            type HostSrc<'a> = $item_name<$crate::marshal_struct_internals::HostSrcVariant<'a>>;
+        impl $crate::marshal_struct_internals::Strategy for $item_name {
+            type Hostbound<'a> = $item_name<$crate::marshal_struct_internals::HostboundVariant<'a>>;
+            type HostboundView = $item_name<$crate::marshal_struct_internals::HostboundViewVariant>;
+            type Guestbound = $item_name<$crate::marshal_struct_internals::GuestboundVariant>;
+            type GuestboundView<'a> = $item_name<$crate::marshal_struct_internals::GuestboundViewVariant<'a>>;
 
-            fn decode_host(
+            fn decode_hostbound(
                 cx: &impl $crate::marshal_struct_internals::HostMemory,
-                ptr: $crate::marshal_struct_internals::FfiPtr<Self::Ffi>,
+                ptr: $crate::marshal_struct_internals::FfiPtr<Self::Hostbound<'static>>,
             ) -> $crate::marshal_struct_internals::Result<
-                Self::HostDest,
+                Self::HostboundView,
                 $crate::marshal_struct_internals::HostMarshalError,
             > {
-                Ok($item_name::<$crate::marshal_struct_internals::HostDestVariant> {$(
-                    $field_name: <<$field_ty as $crate::marshal_struct_internals::Marshal>::Strategy>::decode_host(
+                Ok(Self::HostboundView {$(
+                    $field_name: <<$field_ty as $crate::marshal_struct_internals::Marshal>::Strategy>::decode_hostbound(
                         cx,
                         ptr.field($crate::marshal_struct_internals::ffi_offset!(
-                            $item_name<$crate::marshal_struct_internals::FfiVariant>,
-                            $field_name
+                            Self::HostboundView, $field_name,
                         )),
                     )?,
                 )*})
             }
 
-            fn encode_host(
+            fn encode_guestbound(
                 cx: &mut impl $crate::marshal_struct_internals::HostAlloc,
-                out_ptr: $crate::marshal_struct_internals::FfiPtr<Self::Ffi>,
-                value: &Self::HostSrc<'_>,
+                out_ptr: $crate::marshal_struct_internals::FfiPtr<Self::Guestbound>,
+                value: &Self::GuestboundView<'_>,
             ) -> $crate::marshal_struct_internals::Result<
                 (),
                 $crate::marshal_struct_internals::HostMarshalError,
             > {
                 $(
-                    <<$field_ty as $crate::marshal_struct_internals::Marshal>::Strategy>::encode_host(
+                    <<$field_ty as $crate::marshal_struct_internals::Marshal>::Strategy>::encode_guestbound(
                         cx,
                         out_ptr.field($crate::marshal_struct_internals::ffi_offset!(
-                            $item_name<$crate::marshal_struct_internals::FfiVariant>,
-                            $field_name
+                            Self::Guestbound, $field_name,
                         )),
                         &value.$field_name,
                     )?;
