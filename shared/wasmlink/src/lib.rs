@@ -396,17 +396,17 @@ pub trait Strategy: Sized + 'static + Marshal<Strategy = Self> {
     ) -> Result<(), HostMarshalError>;
 }
 
-// === PodMarshalStrategy === //
+// === PodMarshal === //
 
-pub struct PodMarshalStrategy<T: Pod> {
+pub struct PodMarshal<T: Pod> {
     _ty: PhantomData<fn(T) -> T>,
 }
 
-impl<T: Pod> Marshal for PodMarshalStrategy<T> {
+impl<T: Pod> Marshal for PodMarshal<T> {
     type Strategy = Self;
 }
 
-impl<T: Pod> Strategy for PodMarshalStrategy<T> {
+impl<T: Pod> Strategy for PodMarshal<T> {
     type Hostbound<'a> = T;
     type HostboundView = T;
     type Guestbound = T;
@@ -433,7 +433,7 @@ impl<T: Pod> Strategy for PodMarshalStrategy<T> {
 macro_rules! alias_pod_marshal {
     ( $($ty:ty),*$(,)? ) => {$(
         impl Marshal for $ty {
-            type Strategy = PodMarshalStrategy<$ty>;
+            type Strategy = PodMarshal<$ty>;
         }
     )*};
 }
@@ -454,16 +454,13 @@ alias_pod_marshal! {
     f64,
 }
 
-// === BoolMarshalStrategy === //
+// === BoolMarshal === //
 
-#[non_exhaustive]
-pub struct BoolMarshalStrategy;
-
-impl Marshal for BoolMarshalStrategy {
+impl Marshal for bool {
     type Strategy = Self;
 }
 
-impl Strategy for BoolMarshalStrategy {
+impl Strategy for bool {
     type Hostbound<'a> = bool;
     type HostboundView = bool;
     type Guestbound = bool;
@@ -491,20 +488,13 @@ impl Strategy for BoolMarshalStrategy {
     }
 }
 
-impl Marshal for bool {
-    type Strategy = BoolMarshalStrategy;
-}
+// === char === //
 
-// === CharMarshalStrategy === //
-
-#[non_exhaustive]
-pub struct CharMarshalStrategy;
-
-impl Marshal for CharMarshalStrategy {
+impl Marshal for char {
     type Strategy = Self;
 }
 
-impl Strategy for CharMarshalStrategy {
+impl Strategy for char {
     type Hostbound<'a> = char;
     type HostboundView = char;
     type Guestbound = char;
@@ -528,11 +518,7 @@ impl Strategy for CharMarshalStrategy {
     }
 }
 
-impl Marshal for char {
-    type Strategy = CharMarshalStrategy;
-}
-
-// === OptionMarshalStrategy === //
+// === Option === //
 
 // Views
 #[repr(C)]
@@ -586,15 +572,11 @@ impl<T> FfiOption<T> {
 }
 
 // Strategy
-pub struct OptionMarshalStrategy<T: Strategy> {
-    _ty: PhantomData<fn(T) -> T>,
+impl<T: Marshal> Marshal for Option<T> {
+    type Strategy = Option<T::Strategy>;
 }
 
-impl<T: Strategy> Marshal for OptionMarshalStrategy<T> {
-    type Strategy = Self;
-}
-
-impl<T: Strategy> Strategy for OptionMarshalStrategy<T> {
+impl<T: Strategy> Strategy for Option<T> {
     type Hostbound<'a> = FfiOption<T::Hostbound<'a>>;
     type HostboundView = Option<T::HostboundView>;
     type Guestbound = FfiOption<T::Guestbound>;
@@ -640,11 +622,7 @@ impl<T: Strategy> Strategy for OptionMarshalStrategy<T> {
     }
 }
 
-impl<T: Marshal> Marshal for Option<T> {
-    type Strategy = OptionMarshalStrategy<T::Strategy>;
-}
-
-// === BoxMarshalStrategy === //
+// === Box === //
 
 // Views
 #[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
@@ -668,15 +646,11 @@ impl<T: Strategy> HostPtr<T> {
 }
 
 // Strategy
-pub struct BoxMarshalStrategy<T: Strategy> {
-    _ty: PhantomData<fn(T) -> T>,
+impl<T: Marshal> Marshal for Box<T> {
+    type Strategy = Box<T::Strategy>;
 }
 
-impl<T: Strategy> Marshal for BoxMarshalStrategy<T> {
-    type Strategy = Self;
-}
-
-impl<T: Strategy> Strategy for BoxMarshalStrategy<T> {
+impl<T: Strategy> Strategy for Box<T> {
     type Hostbound<'a> = &'a T::Hostbound<'a>;
     type HostboundView = HostPtr<T>;
     type Guestbound = Box<T::Guestbound>;
@@ -711,11 +685,7 @@ impl<T: Strategy> Strategy for BoxMarshalStrategy<T> {
     }
 }
 
-impl<T: Marshal> Marshal for Box<T> {
-    type Strategy = BoxMarshalStrategy<T::Strategy>;
-}
-
-// === VecMarshalStrategy === //
+// === Vec === //
 
 // Views
 #[repr(transparent)]
@@ -813,15 +783,11 @@ impl<T: Strategy> FfiSliceIndexable for HostSlice<T> {
 }
 
 // Strategy
-pub struct VecMarshalStrategy<T: Strategy> {
-    _ty: PhantomData<fn(T) -> T>,
+impl<T: Marshal> Marshal for Vec<T> {
+    type Strategy = Vec<T::Strategy>;
 }
 
-impl<T: Strategy> Marshal for VecMarshalStrategy<T> {
-    type Strategy = Self;
-}
-
-impl<T: Strategy> Strategy for VecMarshalStrategy<T> {
+impl<T: Strategy> Strategy for Vec<T> {
     type Hostbound<'a> = GuestSliceRef<'a, T::Hostbound<'a>>;
     type HostboundView = HostSlice<T>;
     type Guestbound = GuestSlice<T::Guestbound>;
@@ -858,10 +824,6 @@ impl<T: Strategy> Strategy for VecMarshalStrategy<T> {
 
         Ok(())
     }
-}
-
-impl<T: Marshal> Marshal for Vec<T> {
-    type Strategy = VecMarshalStrategy<T::Strategy>;
 }
 
 // === Struct Marshalling === //
@@ -993,6 +955,41 @@ macro_rules! marshal_struct {
                 )*
 
                 Ok(())
+            }
+        }
+    )*};
+}
+
+// === Functions === //
+
+#[doc(hidden)]
+pub mod import_guest_internals {
+    pub use {
+        crate::{GuestboundOf, HostboundOf},
+        std::mem::MaybeUninit,
+    };
+}
+
+#[macro_export]
+macro_rules! import_guest {
+    ($(
+        $(#[$($meta:tt)*])*
+        $vis:vis fn $module:literal.$name:ident($input:ty) $(-> $out:ty)?;
+    )*) => {$(
+        $(#[$meta])*
+        $vis fn $name(input: &$crate::import_guest_internals::HostboundOf<$input>) -> ($($crate::import_guest_internals::GuestboundOf<$out>)?) {
+            unsafe extern "C" {
+                #[link(wasm_module_name = $module)]
+                fn $name(
+                    input: &$crate::import_guest_internals::HostboundOf<$input>,
+                    output: *mut $crate::import_guest_internals::GuestboundOf<($($out)?)>,
+                );
+            }
+
+            unsafe {
+                let mut output = $crate::import_guest_internals::MaybeUninit::uninit();
+                $name(input, output.as_mut_ptr());
+                output.assume_init()
             }
         }
     )*};

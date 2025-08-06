@@ -722,6 +722,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-abi"
+version = "0.1.0"
+dependencies = [
+ "wasmlink",
+]
+
+[[package]]
 name = "crucible-client"
 version = "0.1.0"
 dependencies = [

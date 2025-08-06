@@ -8,11 +8,13 @@ members = [
     "host/renderer",
     "host/server",
     "host/shared",
+    "shared/crucible-abi",
     "shared/wasmlink",
 ]
 
 [workspace.dependencies]
 crucible = { path = "guest/crucible" }
+crucible-abi = { path = "shared/crucible-abi" }
 crucible-renderer = { path = "host/renderer" }
 crucible-shared = { path = "host/shared" }
 wasmlink = { path = "shared/wasmlink" }
