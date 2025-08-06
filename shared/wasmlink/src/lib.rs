@@ -765,6 +765,14 @@ impl<T: Strategy> HostSlice<T> {
     }
 }
 
+impl<T: Strategy> Iterator for HostSlice<T> {
+    type Item = HostPtr<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.slice.next().map(HostPtr::new)
+    }
+}
+
 impl<T: Strategy> FfiSliceIndexable for HostSlice<T> {
     type RawElem = T::Hostbound<'static>;
     type RichPtr = HostPtr<T>;
@@ -821,6 +829,125 @@ impl<T: Strategy> Strategy for Vec<T> {
         }
 
         *out_ptr.cast::<FfiSlice<T::Guestbound>>().write(cx)? = allocated;
+
+        Ok(())
+    }
+}
+
+// === String === //
+
+// Views
+#[repr(transparent)]
+pub struct GuestStr {
+    _ty: PhantomData<String>,
+    slice: FfiSlice<u8>,
+}
+
+impl GuestStr {
+    pub unsafe fn new_unchecked(slice: FfiSlice<u8>) -> Self {
+        Self {
+            _ty: PhantomData,
+            slice,
+        }
+    }
+
+    pub fn decode(self) -> String {
+        unsafe {
+            String::from_raw_parts(
+                self.slice.guest_ptr().cast(),
+                self.slice.guest_ptr().len(),
+                self.slice.guest_ptr().len(),
+            )
+        }
+    }
+
+    pub fn decode_ref(&self) -> &str {
+        unsafe { std::str::from_utf8_unchecked(&*self.slice.guest_ptr()) }
+    }
+
+    pub fn decode_mut(&mut self) -> &mut str {
+        unsafe { std::str::from_utf8_unchecked_mut(&mut *self.slice.guest_ptr()) }
+    }
+}
+
+#[derive(Copy, Clone, Hash, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct GuestStrRef<'a> {
+    _ty: PhantomData<&'a str>,
+    slice: FfiSlice<u8>,
+}
+
+impl<'a> GuestStrRef<'a> {
+    pub fn new(values: &'a str) -> Self {
+        Self {
+            _ty: PhantomData,
+            slice: FfiSlice::new_guest(values.as_bytes()),
+        }
+    }
+
+    pub fn decode(self) -> &'a str {
+        unsafe { std::str::from_utf8_unchecked(&*self.slice.guest_ptr()) }
+    }
+}
+
+#[derive(Copy, Clone, Hash, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct HostStr {
+    slice: FfiSlice<u8>,
+}
+
+impl HostStr {
+    pub const fn new(slice: FfiSlice<u8>) -> Self {
+        Self { slice }
+    }
+
+    pub const fn slice(self) -> FfiSlice<u8> {
+        self.slice
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.slice.is_empty()
+    }
+
+    pub const fn len(self) -> u32 {
+        self.slice.len()
+    }
+
+    pub fn read(self, cx: &impl HostMemory) -> Result<&str, HostMarshalError> {
+        std::str::from_utf8(self.slice.read(cx)?).map_err(|_| HostMarshalError)
+    }
+}
+
+// Strategy
+impl Marshal for String {
+    type Strategy = Self;
+}
+
+impl Strategy for String {
+    type Hostbound<'a> = GuestStrRef<'a>;
+    type HostboundView = HostStr;
+    type Guestbound = GuestStr;
+    type GuestboundView<'a> = &'a str;
+
+    fn decode_hostbound(
+        cx: &impl HostMemory,
+        ptr: FfiPtr<Self::Hostbound<'static>>,
+    ) -> Result<Self::HostboundView, HostMarshalError> {
+        Ok(HostStr::new(*ptr.cast::<FfiSlice<u8>>().read(cx)?))
+    }
+
+    fn encode_guestbound(
+        cx: &mut impl HostAlloc,
+        out_ptr: FfiPtr<Self::Guestbound>,
+        value: &Self::GuestboundView<'_>,
+    ) -> Result<(), HostMarshalError> {
+        let allocated = cx.alloc(1, u32::try_from(value.len()).expect("string too long"))?;
+
+        let allocated = FfiSlice::<u8>::new(allocated.cast(), value.len() as u32);
+
+        allocated.write(cx)?.copy_from_slice(value.as_bytes());
+
+        *out_ptr.cast::<FfiSlice<u8>>().write(cx)? = allocated;
 
         Ok(())
     }
@@ -960,13 +1087,206 @@ macro_rules! marshal_struct {
     )*};
 }
 
+// === Enum Marshalling === //
+
+// Macro
+pub mod marshal_enum_internals {
+    pub use {
+        super::{FfiPtr, HostAlloc, HostMarshalError, HostMemory, Marshal, Strategy},
+        std::{
+            clone::Clone,
+            cmp::{Eq, Ord, PartialEq, PartialOrd},
+            fmt::Debug,
+            hash::Hash,
+            marker::Copy,
+            result::Result,
+        },
+    };
+
+    pub mod primitives {
+        // From: https://doc.rust-lang.org/reference/type-layout.html#r-layout.repr.primitive.intro
+        pub use std::primitive::{i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize};
+    }
+}
+
+#[macro_export]
+macro_rules! marshal_enum {
+    ($(
+        $(#[$($item_meta:tt)*])*
+        $item_vis:vis enum $item_name:ident : $repr:ident {
+            $(
+                $(#[$($field_meta:tt)*])*
+                $variant_name:ident $(= $variant_val:expr)?
+            ),+
+            $(,)?
+        }
+    )*) => {$(
+        #[derive(
+            $crate::marshal_enum_internals::Debug,
+            $crate::marshal_enum_internals::Copy,
+            $crate::marshal_enum_internals::Clone,
+            $crate::marshal_enum_internals::Hash,
+            $crate::marshal_enum_internals::Eq,
+            $crate::marshal_enum_internals::PartialEq,
+            $crate::marshal_enum_internals::Ord,
+            $crate::marshal_enum_internals::PartialOrd,
+        )]
+        $(#[$($item_meta:tt)*])*
+        #[repr($repr)]
+        $item_vis enum $item_name {
+            $($variant_name $(= $variant_val)?,)*
+        }
+
+        impl $crate::marshal_enum_internals::Marshal for $item_name {
+            type Strategy = Self;
+        }
+
+        impl $crate::marshal_enum_internals::Strategy for $item_name {
+            type Hostbound<'a> = Self;
+            type HostboundView = Self;
+            type Guestbound = Self;
+            type GuestboundView<'a> = Self;
+
+            #[allow(non_upper_case_globals)]
+            fn decode_hostbound(
+                cx: &impl $crate::marshal_enum_internals::HostMemory,
+                ptr: $crate::marshal_enum_internals::FfiPtr<Self>,
+            ) -> $crate::marshal_enum_internals::Result<
+                Self,
+                $crate::marshal_enum_internals::HostMarshalError,
+            > {
+                $(
+                    const $variant_name: $crate::marshal_enum_internals::primitives::$repr
+                        = $item_name::$variant_name as $crate::marshal_enum_internals::primitives::$repr;
+                )*
+                match *ptr.cast::<$crate::marshal_enum_internals::primitives::$repr>().read(cx)? {
+                    $($variant_name => Ok(Self::$variant_name),)*
+                    _ => Err($crate::marshal_enum_internals::HostMarshalError),
+                }
+            }
+
+            fn encode_guestbound(
+                cx: &mut impl $crate::marshal_enum_internals::HostAlloc,
+                out_ptr: $crate::marshal_enum_internals::FfiPtr<Self>,
+                value: &Self,
+            ) -> $crate::marshal_enum_internals::Result<
+                (),
+                $crate::marshal_enum_internals::HostMarshalError,
+            > {
+                *out_ptr.cast::<$crate::marshal_enum_internals::primitives::$repr>().write(cx)?
+                    = *value as $crate::marshal_enum_internals::primitives::$repr;
+
+                Ok(())
+            }
+        }
+    )*};
+}
+
 // === Functions === //
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub enum PortDirection {
+    Hostbound,
+    Guestbound,
+}
+
+impl PortDirection {
+    pub fn is_hostbound(self) -> bool {
+        self == Self::Hostbound
+    }
+
+    pub fn is_guestbound(self) -> bool {
+        self == Self::Guestbound
+    }
+}
+
+#[derive_where(Debug, Copy, Clone)]
+#[expect(clippy::type_complexity)]
+pub struct Port<I, O = ()>
+where
+    I: Marshal,
+    O: Marshal,
+{
+    _ty: PhantomData<fn(I, O) -> (I, O)>,
+    direction: PortDirection,
+    module: &'static str,
+    func_name: &'static str,
+}
+
+impl<I, O> Port<I, O>
+where
+    I: Marshal,
+    O: Marshal,
+{
+    pub const fn new(
+        direction: PortDirection,
+        module: &'static str,
+        func_name: &'static str,
+    ) -> Self {
+        Self {
+            _ty: PhantomData,
+            direction,
+            module,
+            func_name,
+        }
+    }
+
+    pub const fn new_hostbound(module: &'static str, func_name: &'static str) -> Self {
+        Self::new(PortDirection::Hostbound, module, func_name)
+    }
+
+    pub const fn new_guestbound(module: &'static str, func_name: &'static str) -> Self {
+        Self::new(PortDirection::Guestbound, module, func_name)
+    }
+
+    pub const fn direction(self) -> PortDirection {
+        self.direction
+    }
+
+    pub const fn module(self) -> &'static str {
+        self.module
+    }
+
+    pub const fn func_name(self) -> &'static str {
+        self.func_name
+    }
+
+    pub const fn is_compatible(self, other: Port<I, O>) -> bool {
+        const fn str_eq(a: &str, b: &str) -> bool {
+            if a.len() != b.len() {
+                return false;
+            }
+
+            let mut i = 0;
+
+            while i < a.len() {
+                if a.as_bytes()[i] != b.as_bytes()[i] {
+                    return false;
+                }
+
+                i += 1;
+            }
+
+            true
+        }
+
+        self.direction as u8 == other.direction as u8
+            && str_eq(self.module, other.module)
+            && str_eq(self.func_name, other.func_name)
+    }
+
+    pub const fn assert_compatible(self, other: Port<I, O>) {
+        if !self.is_compatible(other) {
+            panic!("incompatible ports");
+        }
+    }
+}
 
 #[doc(hidden)]
 pub mod import_guest_internals {
     pub use {
-        crate::{GuestboundOf, HostboundOf},
-        std::mem::MaybeUninit,
+        crate::{GuestboundOf, HostboundOf, Port},
+        std::{mem::MaybeUninit, stringify},
     };
 }
 
@@ -974,10 +1294,18 @@ pub mod import_guest_internals {
 macro_rules! import_guest {
     ($(
         $(#[$($meta:tt)*])*
-        $vis:vis fn $module:literal.$name:ident($input:ty) $(-> $out:ty)?;
+        $vis:vis fn[$matches_port:expr] $module:literal.$name:ident($input:ty) $(-> $out:ty)?;
     )*) => {$(
         $(#[$meta])*
         $vis fn $name(input: &$crate::import_guest_internals::HostboundOf<$input>) -> ($($crate::import_guest_internals::GuestboundOf<$out>)?) {
+            const _: () = {
+                $crate::import_guest_internals::Port::<$input, ($($out)?)>::new_hostbound(
+                    $module,
+                    $crate::import_guest_internals::stringify!($name),
+                )
+                .assert_compatible($matches_port)
+            };
+
             unsafe extern "C" {
                 #[link(wasm_module_name = $module)]
                 fn $name(
