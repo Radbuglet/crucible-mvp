@@ -1,15 +1,18 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::{
+    cell::RefCell,
     error::Error,
     fmt,
     marker::PhantomData,
     mem::{self, MaybeUninit},
-    ops::Range,
+    ops::{Deref, Range},
+    rc::Rc,
 };
 
 use bytemuck::{Pod, TransparentWrapper, Zeroable};
 use derive_where::derive_where;
+use thunderdome::Arena;
 
 // === Helpers === //
 
@@ -365,6 +368,10 @@ pub trait HostAlloc: HostMemoryMut {
     fn alloc(&mut self, align: u32, size: u32) -> Result<FfiPtr<()>, HostMarshalError>;
 }
 
+pub trait HostClosureCall: HostAlloc {
+    fn call(&mut self, id: u64, boxed_arg: u32) -> Result<(), HostMarshalError>;
+}
+
 pub trait Marshal: Sized + 'static {
     type Strategy: Strategy;
 }
@@ -625,13 +632,15 @@ impl<T: Strategy> Strategy for Option<T> {
 // === Box === //
 
 // Views
+pub type HostPtr<I> = HostPtr_<<I as Marshal>::Strategy>;
+
 #[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
 #[repr(transparent)]
-pub struct HostPtr<T: Strategy> {
+pub struct HostPtr_<T: Strategy> {
     ptr: FfiPtr<T::Hostbound<'static>>,
 }
 
-impl<T: Strategy> HostPtr<T> {
+impl<T: Strategy> HostPtr_<T> {
     pub const fn new(ptr: FfiPtr<T::Hostbound<'static>>) -> Self {
         Self { ptr }
     }
@@ -652,7 +661,7 @@ impl<T: Marshal> Marshal for Box<T> {
 
 impl<T: Strategy> Strategy for Box<T> {
     type Hostbound<'a> = &'a T::Hostbound<'a>;
-    type HostboundView = HostPtr<T>;
+    type HostboundView = HostPtr_<T>;
     type Guestbound = Box<T::Guestbound>;
     type GuestboundView<'a> = &'a T::GuestboundView<'a>;
 
@@ -660,7 +669,7 @@ impl<T: Strategy> Strategy for Box<T> {
         cx: &impl HostMemory,
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> Result<Self::HostboundView, HostMarshalError> {
-        Ok(HostPtr {
+        Ok(HostPtr_ {
             ptr: *ptr.cast::<FfiPtr<T::Hostbound<'static>>>().read(cx)?,
         })
     }
@@ -741,13 +750,15 @@ impl<'a, T> GuestSliceRef<'a, T> {
     }
 }
 
+pub type HostSlice<T> = HostSlice_<<T as Marshal>::Strategy>;
+
 #[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
 #[repr(transparent)]
-pub struct HostSlice<T: Strategy> {
+pub struct HostSlice_<T: Strategy> {
     slice: FfiSlice<T::Hostbound<'static>>,
 }
 
-impl<T: Strategy> HostSlice<T> {
+impl<T: Strategy> HostSlice_<T> {
     pub const fn new(slice: FfiSlice<T::Hostbound<'static>>) -> Self {
         Self { slice }
     }
@@ -765,17 +776,17 @@ impl<T: Strategy> HostSlice<T> {
     }
 }
 
-impl<T: Strategy> Iterator for HostSlice<T> {
-    type Item = HostPtr<T>;
+impl<T: Strategy> Iterator for HostSlice_<T> {
+    type Item = HostPtr_<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.slice.next().map(HostPtr::new)
+        self.slice.next().map(HostPtr_::new)
     }
 }
 
-impl<T: Strategy> FfiSliceIndexable for HostSlice<T> {
+impl<T: Strategy> FfiSliceIndexable for HostSlice_<T> {
     type RawElem = T::Hostbound<'static>;
-    type RichPtr = HostPtr<T>;
+    type RichPtr = HostPtr_<T>;
 
     fn unwrap_slice(me: Self) -> FfiSlice<Self::RawElem> {
         me.slice()
@@ -786,7 +797,7 @@ impl<T: Strategy> FfiSliceIndexable for HostSlice<T> {
     }
 
     fn wrap_ptr(ptr: FfiPtr<Self::RawElem>) -> Self::RichPtr {
-        HostPtr::new(ptr)
+        HostPtr_::new(ptr)
     }
 }
 
@@ -797,7 +808,7 @@ impl<T: Marshal> Marshal for Vec<T> {
 
 impl<T: Strategy> Strategy for Vec<T> {
     type Hostbound<'a> = GuestSliceRef<'a, T::Hostbound<'a>>;
-    type HostboundView = HostSlice<T>;
+    type HostboundView = HostSlice_<T>;
     type Guestbound = GuestSlice<T::Guestbound>;
     type GuestboundView<'a> = &'a [T::GuestboundView<'a>];
 
@@ -805,7 +816,7 @@ impl<T: Strategy> Strategy for Vec<T> {
         cx: &impl HostMemory,
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> Result<Self::HostboundView, HostMarshalError> {
-        Ok(HostSlice::new(
+        Ok(HostSlice_::new(
             *ptr.cast::<FfiSlice<T::Hostbound<'static>>>().read(cx)?,
         ))
     }
@@ -1180,6 +1191,180 @@ macro_rules! marshal_enum {
             }
         }
     )*};
+}
+
+// === Closure === //
+
+// Host View
+pub type HostClosure<I> = HostClosure_<<I as Marshal>::Strategy>;
+
+#[derive_where(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct HostClosure_<I: Strategy> {
+    _ty: PhantomData<fn(I)>,
+    id: u64,
+}
+
+impl<I: Strategy> HostClosure_<I> {
+    pub fn new(id: u64) -> Self {
+        Self {
+            _ty: PhantomData,
+            id,
+        }
+    }
+
+    pub fn id(self) -> u64 {
+        self.id
+    }
+
+    pub fn call(
+        self,
+        cx: &mut impl HostClosureCall,
+        arg: &GuestboundViewOf<'_, I>,
+    ) -> Result<(), HostMarshalError> {
+        let arg_out = cx.alloc(
+            align_of_u32::<GuestboundOf<I>>(),
+            size_of_u32::<GuestboundOf<I>>(),
+        )?;
+
+        let arg_out = arg_out.cast::<GuestboundOf<I>>();
+
+        <I::Strategy>::encode_guestbound(cx, arg_out, arg)?;
+
+        cx.call(self.id, arg_out.addr())?;
+
+        Ok(())
+    }
+}
+
+// Guest Closure
+thread_local! {
+    #[expect(clippy::type_complexity)]
+    static CLOSURES: RefCell<Arena<Rc<dyn Fn(*mut ())>>> = const { RefCell::new(Arena::new()) };
+}
+
+pub type OwnedGuestClosure<I> = OwnedGuestClosure_<<I as Marshal>::Strategy>;
+pub type GuestClosure<I> = GuestClosure_<<I as Marshal>::Strategy>;
+
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct OwnedGuestClosure_<I: Strategy> {
+    raw: GuestClosure_<I>,
+}
+
+impl<I: Strategy> OwnedGuestClosure_<I> {
+    #[must_use]
+    pub fn new(f: impl 'static + Fn(GuestboundOf<I>)) -> Self {
+        Self::wrap(GuestClosure_::new_unmanaged(f))
+    }
+
+    #[must_use]
+    pub fn wrap(raw: GuestClosure_<I>) -> Self {
+        Self { raw }
+    }
+
+    pub fn unmanaged(&self) -> GuestClosure_<I> {
+        self.raw
+    }
+
+    pub fn defuse(self) -> GuestClosure_<I> {
+        let raw = self.raw;
+        mem::forget(self);
+        raw
+    }
+}
+
+impl<I: Strategy> Deref for OwnedGuestClosure_<I> {
+    type Target = GuestClosure_<I>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.raw
+    }
+}
+
+impl<I: Strategy> Drop for OwnedGuestClosure_<I> {
+    fn drop(&mut self) {
+        self.raw.unmanaged_destroy();
+    }
+}
+
+#[derive_where(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[repr(transparent)]
+pub struct GuestClosure_<I: Strategy> {
+    _no_send_sync: PhantomData<*const ()>,
+    _ty: PhantomData<fn(I)>,
+    raw_handle: u64,
+}
+
+impl<I: Strategy> GuestClosure_<I> {
+    #[must_use]
+    pub fn new_unmanaged(f: impl 'static + Fn(GuestboundOf<I>)) -> Self {
+        Self {
+            _no_send_sync: PhantomData,
+            _ty: PhantomData,
+            raw_handle: CLOSURES.with_borrow_mut(|v| {
+                v.insert(Rc::new(move |ptr| {
+                    f(*unsafe { Box::from_raw(ptr.cast::<GuestboundOf<I>>()) })
+                }))
+                .to_bits()
+            }),
+        }
+    }
+
+    pub fn handle(self) -> thunderdome::Index {
+        thunderdome::Index::from_bits(self.raw_handle).unwrap()
+    }
+
+    #[must_use]
+    pub fn is_alive(self) -> bool {
+        CLOSURES.with_borrow(|v| v.contains(self.handle()))
+    }
+
+    pub fn unmanaged_destroy(self) -> bool {
+        CLOSURES
+            .with_borrow_mut(|v| v.remove(self.handle()))
+            .is_some()
+    }
+
+    pub fn call(self, arg: Box<GuestboundOf<I>>) {
+        unsafe { self.call_raw(Box::into_raw(arg).cast::<()>()) }
+    }
+
+    pub unsafe fn call_raw(self, boxed_arg: *mut ()) {
+        let slot = CLOSURES
+            .with_borrow(|v| v.get(self.handle()).cloned())
+            .unwrap_or_else(|| panic!("attempted to call dead closure {self:?}"));
+
+        slot(boxed_arg);
+    }
+}
+
+// Marshal
+impl<I: Marshal> Marshal for fn(I) {
+    type Strategy = fn(I::Strategy);
+}
+
+impl<I: Strategy> Strategy for fn(I) {
+    type Hostbound<'a> = GuestClosure_<I>;
+    type HostboundView = HostClosure_<I>;
+    type Guestbound = GuestClosure_<I>;
+    type GuestboundView<'a> = HostClosure_<I>;
+
+    fn decode_hostbound(
+        cx: &impl HostMemory,
+        ptr: FfiPtr<Self::Hostbound<'static>>,
+    ) -> Result<Self::HostboundView, HostMarshalError> {
+        Ok(HostClosure_::new(*ptr.cast::<u64>().read(cx)?))
+    }
+
+    fn encode_guestbound(
+        cx: &mut impl HostAlloc,
+        out_ptr: FfiPtr<Self::Guestbound>,
+        value: &Self::GuestboundView<'_>,
+    ) -> Result<(), HostMarshalError> {
+        *out_ptr.cast::<u64>().write(cx)? = value.id();
+
+        Ok(())
+    }
 }
 
 // === Functions === //
