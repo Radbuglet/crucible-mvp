@@ -1,20 +1,21 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::{
-    cell::RefCell,
     error::Error,
     fmt,
     marker::PhantomData,
     mem::{self, MaybeUninit},
     ops::{Deref, Range},
-    rc::Rc,
 };
 
 use bytemuck::{Pod, TransparentWrapper, Zeroable};
 use derive_where::derive_where;
-use thunderdome::Arena;
 
 // === Helpers === //
+
+cfgenius::define! {
+    is_wasm = cfg(target_arch = "wasm32");
+}
 
 pub const fn align_of_u32<T>() -> u32 {
     const {
@@ -41,16 +42,14 @@ pub const fn size_of_u32<T>() -> u32 {
 }
 
 pub const fn guest_usize_to_u32(val: usize) -> u32 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        val as u32
-    }
+    cfgenius::cond! {
+        if macro(is_wasm) {
+            val as u32
+        } else {
+            _ = val;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        _ = val;
-
-        unimplemented!();
+            unimplemented!();
+        }
     }
 }
 
@@ -145,14 +144,12 @@ impl<T> FfiPtr<T> {
     }
 
     pub const fn guest_ptr(self) -> *mut T {
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.addr as usize as *mut T
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            unimplemented!()
+        cfgenius::cond! {
+            if macro(is_wasm) {
+                self.addr as usize as *mut T
+            } else {
+                unimplemented!()
+            }
         }
     }
 
@@ -178,11 +175,11 @@ impl<T> FfiPtr<T> {
 }
 
 impl<T: Pod> FfiPtr<T> {
-    pub fn read(self, cx: &impl HostMemory) -> Result<&T, HostMarshalError> {
+    pub fn read(self, cx: &impl HostContext) -> Result<&T, HostMarshalError> {
         Ok(&cx.read(self.addr(), 1)?[0])
     }
 
-    pub fn write(self, cx: &mut impl HostMemoryMut) -> Result<&mut T, HostMarshalError> {
+    pub fn write(self, cx: &mut impl HostContext) -> Result<&mut T, HostMarshalError> {
         Ok(&mut cx.write(self.addr(), 1)?[0])
     }
 }
@@ -216,14 +213,12 @@ impl<T> FfiSlice<T> {
     }
 
     pub const fn guest_ptr(self) -> *mut [T] {
-        #[cfg(target_arch = "wasm32")]
-        {
-            std::ptr::slice_from_raw_parts(self.base as usize as *mut T, self.len as usize)
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            unimplemented!()
+        cfgenius::cond! {
+            if macro(is_wasm) {
+                std::ptr::slice_from_raw_parts_mut(self.base.guest_ptr(), self.len as usize)
+            } else {
+                unimplemented!()
+            }
         }
     }
 
@@ -266,11 +261,11 @@ impl<T> FfiSliceIndexable for FfiSlice<T> {
 }
 
 impl<T: Pod> FfiSlice<T> {
-    pub fn read(self, cx: &impl HostMemory) -> Result<&[T], HostMarshalError> {
+    pub fn read(self, cx: &impl HostContext) -> Result<&[T], HostMarshalError> {
         cx.read(self.base().addr(), self.len())
     }
 
-    pub fn write(self, cx: &mut impl HostMemoryMut) -> Result<&mut [T], HostMarshalError> {
+    pub fn write(self, cx: &mut impl HostContext) -> Result<&mut [T], HostMarshalError> {
         cx.write(self.base().addr(), self.len())
     }
 }
@@ -340,10 +335,11 @@ macro_rules! ffi_offset {
 
 // === Marshal Trait === //
 
-pub type GuestboundOf<M> = <<M as Marshal>::Strategy as Strategy>::Guestbound;
-pub type HostboundOf<'a, M> = <<M as Marshal>::Strategy as Strategy>::Hostbound<'a>;
-pub type HostboundViewOf<M> = <<M as Marshal>::Strategy as Strategy>::HostboundView;
-pub type GuestboundViewOf<'a, M> = <<M as Marshal>::Strategy as Strategy>::GuestboundView<'a>;
+pub type StrategyOf<M> = <M as Marshal>::Strategy;
+pub type GuestboundOf<M> = <StrategyOf<M> as Strategy>::Guestbound;
+pub type HostboundOf<'a, M> = <StrategyOf<M> as Strategy>::Hostbound<'a>;
+pub type HostboundViewOf<M> = <StrategyOf<M> as Strategy>::HostboundView;
+pub type GuestboundViewOf<'a, M> = <StrategyOf<M> as Strategy>::GuestboundView<'a>;
 
 #[derive(Debug, Clone)]
 pub struct HostMarshalError;
@@ -356,19 +352,13 @@ impl fmt::Display for HostMarshalError {
 
 impl Error for HostMarshalError {}
 
-pub trait HostMemory: Sized {
+pub trait HostContext: Sized {
     fn read<T: Pod>(&self, base: u32, len: u32) -> Result<&[T], HostMarshalError>;
-}
 
-pub trait HostMemoryMut: HostMemory {
     fn write<T: Pod>(&mut self, base: u32, len: u32) -> Result<&mut [T], HostMarshalError>;
-}
 
-pub trait HostAlloc: HostMemoryMut {
     fn alloc(&mut self, align: u32, size: u32) -> Result<FfiPtr<()>, HostMarshalError>;
-}
 
-pub trait HostClosureCall: HostAlloc {
     fn call(&mut self, id: u64, boxed_arg: u32) -> Result<(), HostMarshalError>;
 }
 
@@ -392,15 +382,38 @@ pub trait Strategy: Sized + 'static + Marshal<Strategy = Self> {
     type GuestboundView<'a>;
 
     fn decode_hostbound(
-        cx: &impl HostMemory,
+        cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> Result<Self::HostboundView, HostMarshalError>;
 
     fn encode_guestbound(
-        cx: &mut impl HostAlloc,
+        cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError>;
+}
+
+pub trait UnifiedStrategy:
+    for<'a> Strategy<
+        Hostbound<'a> = Self::Unified,
+        HostboundView = Self::Unified,
+        Guestbound = Self::Unified,
+        GuestboundView<'a> = Self::Unified,
+    >
+{
+    type Unified;
+}
+
+impl<U, T> UnifiedStrategy for T
+where
+    T: for<'a> Strategy<
+            Hostbound<'a> = U,
+            HostboundView = U,
+            Guestbound = U,
+            GuestboundView<'a> = U,
+        >,
+{
+    type Unified = U;
 }
 
 // === PodMarshal === //
@@ -420,14 +433,14 @@ impl<T: Pod> Strategy for PodMarshal<T> {
     type GuestboundView<'a> = T;
 
     fn decode_hostbound(
-        cx: &impl HostMemory,
+        cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> Result<Self::HostboundView, HostMarshalError> {
         ptr.read(cx).copied()
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostAlloc,
+        cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError> {
@@ -461,67 +474,87 @@ alias_pod_marshal! {
     f64,
 }
 
-// === BoolMarshal === //
+// === ConvertMarshal === //
 
-impl Marshal for bool {
+/// ## Safety
+///
+/// All values of `Self` must be directly transmutable to `Self::Raw`'s `Unified` type.
+///
+pub unsafe trait ConvertMarshal: Sized + 'static {
+    type Raw: UnifiedStrategy;
+
+    fn try_from_raw(raw: <Self::Raw as UnifiedStrategy>::Unified)
+    -> Result<Self, HostMarshalError>;
+}
+
+pub struct ConvertMarshalStrategy<T: ConvertMarshal> {
+    _ty: PhantomData<fn(T) -> T>,
+}
+
+impl<T: ConvertMarshal> Marshal for ConvertMarshalStrategy<T> {
     type Strategy = Self;
 }
 
-impl Strategy for bool {
-    type Hostbound<'a> = bool;
-    type HostboundView = bool;
-    type Guestbound = bool;
-    type GuestboundView<'a> = bool;
+impl<T: ConvertMarshal> Strategy for ConvertMarshalStrategy<T> {
+    type Hostbound<'a> = T;
+    type HostboundView = T;
+    type Guestbound = T;
+    type GuestboundView<'a> = T;
 
     fn decode_hostbound(
-        cx: &impl HostMemory,
+        cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> Result<Self::HostboundView, HostMarshalError> {
-        match *ptr.cast::<u8>().read(cx)? {
+        T::try_from_raw(T::Raw::decode_hostbound(
+            cx,
+            ptr.cast::<<T::Raw as UnifiedStrategy>::Unified>(),
+        )?)
+    }
+
+    fn encode_guestbound(
+        cx: &mut impl HostContext,
+        out_ptr: FfiPtr<Self::Guestbound>,
+        value: &Self::GuestboundView<'_>,
+    ) -> Result<(), HostMarshalError> {
+        T::Raw::encode_guestbound(
+            cx,
+            out_ptr.cast::<<T::Raw as UnifiedStrategy>::Unified>(),
+            unsafe { &*(value as *const T as *const <T::Raw as UnifiedStrategy>::Unified) },
+        )
+    }
+}
+
+// === bool and char === //
+
+impl Marshal for bool {
+    type Strategy = ConvertMarshalStrategy<Self>;
+}
+
+unsafe impl ConvertMarshal for bool {
+    type Raw = StrategyOf<u8>;
+
+    fn try_from_raw(
+        raw: <Self::Raw as UnifiedStrategy>::Unified,
+    ) -> Result<Self, HostMarshalError> {
+        match raw {
             0 => Ok(false),
             1 => Ok(true),
             _ => Err(HostMarshalError),
         }
     }
-
-    fn encode_guestbound(
-        cx: &mut impl HostAlloc,
-        out_ptr: FfiPtr<Self::Guestbound>,
-        value: &Self::GuestboundView<'_>,
-    ) -> Result<(), HostMarshalError> {
-        *out_ptr.cast::<u8>().write(cx)? = *value as u8;
-
-        Ok(())
-    }
 }
-
-// === char === //
 
 impl Marshal for char {
-    type Strategy = Self;
+    type Strategy = ConvertMarshalStrategy<Self>;
 }
 
-impl Strategy for char {
-    type Hostbound<'a> = char;
-    type HostboundView = char;
-    type Guestbound = char;
-    type GuestboundView<'a> = char;
+unsafe impl ConvertMarshal for char {
+    type Raw = StrategyOf<u32>;
 
-    fn decode_hostbound(
-        cx: &impl HostMemory,
-        ptr: FfiPtr<Self::Hostbound<'static>>,
-    ) -> Result<Self::HostboundView, HostMarshalError> {
-        char::try_from(*ptr.cast::<u32>().read(cx)?).map_err(|_| HostMarshalError)
-    }
-
-    fn encode_guestbound(
-        cx: &mut impl HostAlloc,
-        out_ptr: FfiPtr<Self::Guestbound>,
-        value: &Self::GuestboundView<'_>,
-    ) -> Result<(), HostMarshalError> {
-        *out_ptr.cast::<u32>().write(cx)? = *value as u32;
-
-        Ok(())
+    fn try_from_raw(
+        raw: <Self::Raw as UnifiedStrategy>::Unified,
+    ) -> Result<Self, HostMarshalError> {
+        char::try_from(raw).map_err(|_| HostMarshalError)
     }
 }
 
@@ -590,7 +623,7 @@ impl<T: Strategy> Strategy for Option<T> {
     type GuestboundView<'a> = Option<T::GuestboundView<'a>>;
 
     fn decode_hostbound(
-        cx: &impl HostMemory,
+        cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> Result<Self::HostboundView, HostMarshalError> {
         let is_present = *ptr
@@ -608,7 +641,7 @@ impl<T: Strategy> Strategy for Option<T> {
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostAlloc,
+        cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError> {
@@ -632,7 +665,7 @@ impl<T: Strategy> Strategy for Option<T> {
 // === Box === //
 
 // Views
-pub type HostPtr<I> = HostPtr_<<I as Marshal>::Strategy>;
+pub type HostPtr<I> = HostPtr_<StrategyOf<I>>;
 
 #[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
 #[repr(transparent)]
@@ -649,7 +682,7 @@ impl<T: Strategy> HostPtr_<T> {
         self.ptr
     }
 
-    pub fn decode(self, cx: &impl HostMemory) -> Result<T::HostboundView, HostMarshalError> {
+    pub fn decode(self, cx: &impl HostContext) -> Result<T::HostboundView, HostMarshalError> {
         T::decode_hostbound(cx, self.ptr)
     }
 }
@@ -666,7 +699,7 @@ impl<T: Strategy> Strategy for Box<T> {
     type GuestboundView<'a> = &'a T::GuestboundView<'a>;
 
     fn decode_hostbound(
-        cx: &impl HostMemory,
+        cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> Result<Self::HostboundView, HostMarshalError> {
         Ok(HostPtr_ {
@@ -675,7 +708,7 @@ impl<T: Strategy> Strategy for Box<T> {
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostAlloc,
+        cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError> {
@@ -750,7 +783,7 @@ impl<'a, T> GuestSliceRef<'a, T> {
     }
 }
 
-pub type HostSlice<T> = HostSlice_<<T as Marshal>::Strategy>;
+pub type HostSlice<T> = HostSlice_<StrategyOf<T>>;
 
 #[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
 #[repr(transparent)]
@@ -813,7 +846,7 @@ impl<T: Strategy> Strategy for Vec<T> {
     type GuestboundView<'a> = &'a [T::GuestboundView<'a>];
 
     fn decode_hostbound(
-        cx: &impl HostMemory,
+        cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> Result<Self::HostboundView, HostMarshalError> {
         Ok(HostSlice_::new(
@@ -822,7 +855,7 @@ impl<T: Strategy> Strategy for Vec<T> {
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostAlloc,
+        cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError> {
@@ -924,7 +957,7 @@ impl HostStr {
         self.slice.len()
     }
 
-    pub fn read(self, cx: &impl HostMemory) -> Result<&str, HostMarshalError> {
+    pub fn read(self, cx: &impl HostContext) -> Result<&str, HostMarshalError> {
         std::str::from_utf8(self.slice.read(cx)?).map_err(|_| HostMarshalError)
     }
 }
@@ -941,14 +974,14 @@ impl Strategy for String {
     type GuestboundView<'a> = &'a str;
 
     fn decode_hostbound(
-        cx: &impl HostMemory,
+        cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> Result<Self::HostboundView, HostMarshalError> {
         Ok(HostStr::new(*ptr.cast::<FfiSlice<u8>>().read(cx)?))
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostAlloc,
+        cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError> {
@@ -1016,8 +1049,8 @@ impl<'a> VariantSelector for GuestboundViewVariant<'a> {
 pub mod marshal_struct_internals {
     pub use {
         super::{
-            FfiPtr, GuestboundVariant, GuestboundViewVariant, HostAlloc, HostMarshalError,
-            HostMemory, HostboundVariant, HostboundViewVariant, MarkerVariant, Marshal, Strategy,
+            FfiPtr, GuestboundVariant, GuestboundViewVariant, HostContext, HostMarshalError,
+            HostboundVariant, HostboundViewVariant, MarkerVariant, Marshal, Strategy,
             VariantSelector, ffi_offset,
         },
         std::result::Result,
@@ -1058,7 +1091,7 @@ macro_rules! marshal_struct {
             type GuestboundView<'a> = $item_name<$crate::marshal_struct_internals::GuestboundViewVariant<'a>>;
 
             fn decode_hostbound(
-                cx: &impl $crate::marshal_struct_internals::HostMemory,
+                cx: &impl $crate::marshal_struct_internals::HostContext,
                 ptr: $crate::marshal_struct_internals::FfiPtr<Self::Hostbound<'static>>,
             ) -> $crate::marshal_struct_internals::Result<
                 Self::HostboundView,
@@ -1075,7 +1108,7 @@ macro_rules! marshal_struct {
             }
 
             fn encode_guestbound(
-                cx: &mut impl $crate::marshal_struct_internals::HostAlloc,
+                cx: &mut impl $crate::marshal_struct_internals::HostContext,
                 out_ptr: $crate::marshal_struct_internals::FfiPtr<Self::Guestbound>,
                 value: &Self::GuestboundView<'_>,
             ) -> $crate::marshal_struct_internals::Result<
@@ -1103,7 +1136,7 @@ macro_rules! marshal_struct {
 // Macro
 pub mod marshal_enum_internals {
     pub use {
-        super::{FfiPtr, HostAlloc, HostMarshalError, HostMemory, Marshal, Strategy},
+        super::{FfiPtr, HostContext, HostMarshalError, Marshal, Strategy},
         std::{
             clone::Clone,
             cmp::{Eq, Ord, PartialEq, PartialOrd},
@@ -1160,7 +1193,7 @@ macro_rules! marshal_enum {
 
             #[allow(non_upper_case_globals)]
             fn decode_hostbound(
-                cx: &impl $crate::marshal_enum_internals::HostMemory,
+                cx: &impl $crate::marshal_enum_internals::HostContext,
                 ptr: $crate::marshal_enum_internals::FfiPtr<Self>,
             ) -> $crate::marshal_enum_internals::Result<
                 Self,
@@ -1177,7 +1210,7 @@ macro_rules! marshal_enum {
             }
 
             fn encode_guestbound(
-                cx: &mut impl $crate::marshal_enum_internals::HostAlloc,
+                cx: &mut impl $crate::marshal_enum_internals::HostContext,
                 out_ptr: $crate::marshal_enum_internals::FfiPtr<Self>,
                 value: &Self,
             ) -> $crate::marshal_enum_internals::Result<
@@ -1196,7 +1229,7 @@ macro_rules! marshal_enum {
 // === Closure === //
 
 // Host View
-pub type HostClosure<I> = HostClosure_<<I as Marshal>::Strategy>;
+pub type HostClosure<I> = HostClosure_<StrategyOf<I>>;
 
 #[derive_where(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct HostClosure_<I: Strategy> {
@@ -1218,7 +1251,7 @@ impl<I: Strategy> HostClosure_<I> {
 
     pub fn call(
         self,
-        cx: &mut impl HostClosureCall,
+        cx: &mut impl HostContext,
         arg: &GuestboundViewOf<'_, I>,
     ) -> Result<(), HostMarshalError> {
         let arg_out = cx.alloc(
@@ -1237,13 +1270,19 @@ impl<I: Strategy> HostClosure_<I> {
 }
 
 // Guest Closure
-thread_local! {
-    #[expect(clippy::type_complexity)]
-    static CLOSURES: RefCell<Arena<Rc<dyn Fn(*mut ())>>> = const { RefCell::new(Arena::new()) };
+
+cfgenius::cond! {
+    if macro(is_wasm) {
+        thread_local! {
+            #[expect(clippy::type_complexity)]
+            static CLOSURES: std::cell::RefCell<thunderdome::Arena<std::rc::Rc<dyn Fn(*mut ())>>> =
+                const { std::cell::RefCell::new(thunderdome::Arena::new()) };
+        }
+    }
 }
 
-pub type OwnedGuestClosure<I> = OwnedGuestClosure_<<I as Marshal>::Strategy>;
-pub type GuestClosure<I> = GuestClosure_<<I as Marshal>::Strategy>;
+pub type OwnedGuestClosure<I> = OwnedGuestClosure_<StrategyOf<I>>;
+pub type GuestClosure<I> = GuestClosure_<StrategyOf<I>>;
 
 #[derive(Debug)]
 #[repr(transparent)]
@@ -1298,43 +1337,88 @@ pub struct GuestClosure_<I: Strategy> {
 impl<I: Strategy> GuestClosure_<I> {
     #[must_use]
     pub fn new_unmanaged(f: impl 'static + Fn(GuestboundOf<I>)) -> Self {
-        Self {
-            _no_send_sync: PhantomData,
-            _ty: PhantomData,
-            raw_handle: CLOSURES.with_borrow_mut(|v| {
-                v.insert(Rc::new(move |ptr| {
-                    f(*unsafe { Box::from_raw(ptr.cast::<GuestboundOf<I>>()) })
-                }))
-                .to_bits()
-            }),
-        }
-    }
+        cfgenius::cond! {
+            if macro(is_wasm) {
+                Self {
+                    _no_send_sync: PhantomData,
+                    _ty: PhantomData,
+                    raw_handle: CLOSURES.with_borrow_mut(|v| {
+                        v.insert(std::rc::Rc::new(move |ptr| {
+                            f(*unsafe { Box::from_raw(ptr.cast::<GuestboundOf<I>>()) })
+                        }))
+                        .to_bits()
+                    }),
+                }
+            } else {
+                _ = f;
 
-    pub fn handle(self) -> thunderdome::Index {
-        thunderdome::Index::from_bits(self.raw_handle).unwrap()
+                unimplemented!()
+            }
+        }
     }
 
     #[must_use]
     pub fn is_alive(self) -> bool {
-        CLOSURES.with_borrow(|v| v.contains(self.handle()))
+        cfgenius::cond! {
+            if macro(is_wasm) {
+                CLOSURES.with_borrow(|v| v.contains(self.handle()))
+            } else {
+                unreachable!()
+            }
+        }
     }
 
     pub fn unmanaged_destroy(self) -> bool {
-        CLOSURES
-            .with_borrow_mut(|v| v.remove(self.handle()))
-            .is_some()
+        cfgenius::cond! {
+            if macro(is_wasm) {
+                CLOSURES
+                    .with_borrow_mut(|v| v.remove(self.handle()))
+                    .is_some()
+            } else {
+                unreachable!()
+            }
+        }
     }
 
+    #[allow(clippy::boxed_local)] // (for non-wasm variant)
     pub fn call(self, arg: Box<GuestboundOf<I>>) {
-        unsafe { self.call_raw(Box::into_raw(arg).cast::<()>()) }
+        cfgenius::cond! {
+            if macro(is_wasm) {
+                unsafe { call_raw_closure(self.raw_handle, Box::into_raw(arg).cast::<()>()) }
+            } else {
+                _ = arg;
+
+                unreachable!()
+            }
+        }
     }
+}
 
-    pub unsafe fn call_raw(self, boxed_arg: *mut ()) {
-        let slot = CLOSURES
-            .with_borrow(|v| v.get(self.handle()).cloned())
-            .unwrap_or_else(|| panic!("attempted to call dead closure {self:?}"));
+cfgenius::cond! {
+    if macro(is_wasm) {
+        impl<I: Strategy> GuestClosure_<I> {
+            fn handle(self) -> thunderdome::Index {
+                thunderdome::Index::from_bits(self.raw_handle).unwrap()
+            }
+        }
 
-        slot(boxed_arg);
+        unsafe fn call_raw_closure(handle: u64, boxed_arg: *mut ()) {
+            cfgenius::cond! {
+                if macro(is_wasm) {
+                    let handle = thunderdome::Index::from_bits(handle).unwrap();
+
+                    let slot = CLOSURES
+                        .with_borrow(|v| v.get(handle).cloned())
+                        .unwrap_or_else(|| panic!("attempted to call dead closure {handle:?}"));
+
+                    slot(boxed_arg);
+                } else {
+                    _ = boxed_arg;
+
+                    unreachable!();
+                }
+            }
+        }
     }
 }
 
@@ -1350,14 +1434,14 @@ impl<I: Strategy> Strategy for fn(I) {
     type GuestboundView<'a> = HostClosure_<I>;
 
     fn decode_hostbound(
-        cx: &impl HostMemory,
+        cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> Result<Self::HostboundView, HostMarshalError> {
         Ok(HostClosure_::new(*ptr.cast::<u64>().read(cx)?))
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostAlloc,
+        cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> Result<(), HostMarshalError> {
@@ -1367,7 +1451,7 @@ impl<I: Strategy> Strategy for fn(I) {
     }
 }
 
-// === Functions === //
+// === Ports === //
 
 #[derive_where(Debug, Copy, Clone)]
 #[expect(clippy::type_complexity)]
@@ -1432,7 +1516,7 @@ where
 }
 
 #[doc(hidden)]
-pub mod import_guest_internals {
+pub mod bind_port_internals {
     pub use {
         crate::{GuestboundOf, HostboundOf, Port},
         std::{mem::MaybeUninit, stringify},
@@ -1440,17 +1524,17 @@ pub mod import_guest_internals {
 }
 
 #[macro_export]
-macro_rules! import_guest {
+macro_rules! bind_port {
     ($(
         $(#[$($meta:tt)*])*
         $vis:vis fn[$matches_port:expr] $module:literal.$name:ident($input:ty) $(-> $out:ty)?;
     )*) => {$(
         $(#[$meta])*
-        $vis fn $name(input: &$crate::import_guest_internals::HostboundOf<$input>) -> ($($crate::import_guest_internals::GuestboundOf<$out>)?) {
+        $vis fn $name(input: &$crate::bind_port_internals::HostboundOf<$input>) -> ($($crate::bind_port_internals::GuestboundOf<$out>)?) {
             const _: () = {
-                $crate::import_guest_internals::Port::<$input, ($($out)?)>::new_hostbound(
+                $crate::bind_port_internals::Port::<$input, ($($out)?)>::new_hostbound(
                     $module,
-                    $crate::import_guest_internals::stringify!($name),
+                    $crate::bind_port_internals::stringify!($name),
                 )
                 .assert_compatible($matches_port)
             };
@@ -1458,16 +1542,38 @@ macro_rules! import_guest {
             unsafe extern "C" {
                 #[link(wasm_module_name = $module)]
                 fn $name(
-                    input: &$crate::import_guest_internals::HostboundOf<$input>,
-                    output: *mut $crate::import_guest_internals::GuestboundOf<($($out)?)>,
+                    input: &$crate::bind_port_internals::HostboundOf<$input>,
+                    output: *mut $crate::bind_port_internals::GuestboundOf<($($out)?)>,
                 );
             }
 
             unsafe {
-                let mut output = $crate::import_guest_internals::MaybeUninit::uninit();
+                let mut output = $crate::bind_port_internals::MaybeUninit::uninit();
                 $name(input, output.as_mut_ptr());
                 output.assume_init()
             }
         }
     )*};
+}
+
+// === Guest Exports === //
+
+cfgenius::cond! {
+    if macro(is_wasm) {
+        #[unsafe(no_mangle)]
+        unsafe extern "C" fn rust_wasmlink_mem_alloc(size: usize, align: usize) -> *mut u8 {
+            let layout = std::alloc::Layout::from_size_align(size, align).unwrap();
+
+            if layout.size() == 0 {
+                align as *mut u8
+            } else {
+                unsafe { std::alloc::alloc(layout) }
+            }
+        }
+
+        #[unsafe(no_mangle)]
+        unsafe extern "C" fn rust_wasmlink_closure_invoke(handle: u64, boxed_arg: *mut ()) {
+            unsafe { call_raw_closure(handle, boxed_arg) };
+        }
+    }
 }
