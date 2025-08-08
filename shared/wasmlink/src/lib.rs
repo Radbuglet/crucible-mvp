@@ -1369,22 +1369,6 @@ impl<I: Strategy> Strategy for fn(I) {
 
 // === Functions === //
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
-pub enum PortDirection {
-    Hostbound,
-    Guestbound,
-}
-
-impl PortDirection {
-    pub fn is_hostbound(self) -> bool {
-        self == Self::Hostbound
-    }
-
-    pub fn is_guestbound(self) -> bool {
-        self == Self::Guestbound
-    }
-}
-
 #[derive_where(Debug, Copy, Clone)]
 #[expect(clippy::type_complexity)]
 pub struct Port<I, O = ()>
@@ -1393,7 +1377,6 @@ where
     O: Marshal,
 {
     _ty: PhantomData<fn(I, O) -> (I, O)>,
-    direction: PortDirection,
     module: &'static str,
     func_name: &'static str,
 }
@@ -1403,29 +1386,12 @@ where
     I: Marshal,
     O: Marshal,
 {
-    pub const fn new(
-        direction: PortDirection,
-        module: &'static str,
-        func_name: &'static str,
-    ) -> Self {
+    pub const fn new(module: &'static str, func_name: &'static str) -> Self {
         Self {
             _ty: PhantomData,
-            direction,
             module,
             func_name,
         }
-    }
-
-    pub const fn new_hostbound(module: &'static str, func_name: &'static str) -> Self {
-        Self::new(PortDirection::Hostbound, module, func_name)
-    }
-
-    pub const fn new_guestbound(module: &'static str, func_name: &'static str) -> Self {
-        Self::new(PortDirection::Guestbound, module, func_name)
-    }
-
-    pub const fn direction(self) -> PortDirection {
-        self.direction
     }
 
     pub const fn module(self) -> &'static str {
@@ -1455,9 +1421,7 @@ where
             true
         }
 
-        self.direction as u8 == other.direction as u8
-            && str_eq(self.module, other.module)
-            && str_eq(self.func_name, other.func_name)
+        str_eq(self.module, other.module) && str_eq(self.func_name, other.func_name)
     }
 
     pub const fn assert_compatible(self, other: Port<I, O>) {
