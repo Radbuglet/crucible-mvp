@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use glam::{Affine2, Affine3A, Mat4};
 
-use super::{color::Color8, texture::GpuTexturePart};
+use super::{color::Bgra8, texture::GpuTexturePart};
 
 // === Model === //
 
@@ -52,11 +52,11 @@ impl ModelBuffer {
         todo!()
     }
 
-    pub fn push(&mut self, affine: Affine3A, tint: Color8) -> InstanceIdx {
+    pub fn push(&mut self, affine: Affine3A, tint: Bgra8) -> InstanceIdx {
         todo!()
     }
 
-    pub fn update(&mut self, affine: Affine3A, tint: Color8) {
+    pub fn update(&mut self, affine: Affine3A, tint: Bgra8) {
         todo!()
     }
 

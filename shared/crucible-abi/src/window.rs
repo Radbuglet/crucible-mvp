@@ -10,6 +10,8 @@ pub const WINDOW_REQUEST_REDRAW: Port<()> = Port::new("crucible", "window_reques
 pub const WINDOW_BIND_HANDLERS: Port<WindowHandlers> =
     Port::new("crucible", "window_bind_handlers");
 
+pub const WINDOW_UNBIND_HANDLERS: Port<()> = Port::new("crucible", "window_unbind_handlers");
+
 marshal_struct! {
     pub struct WindowHandlers {
         pub redraw_requested: fn(RedrawRequestedArgs),
@@ -18,12 +20,17 @@ marshal_struct! {
     }
 
     pub struct KeyEvent {
-        pub physical_key: u32,
-        pub logical_key: u32,
+        pub physical_key: Option<u32>,
+        pub logical_key: LogicalKey,
         pub text: Option<String>,
         pub location: u32,
         pub pressed: bool,
         pub repeat: bool,
+    }
+
+    pub struct LogicalKey {
+        pub named: Option<u32>,
+        pub character: Option<String>,
     }
 
     pub struct RedrawRequestedArgs {

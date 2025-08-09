@@ -50,7 +50,7 @@ impl Marshal for URect2 {
 #[derive(Debug, Copy, Clone, PartialEq, Pod, Zeroable)]
 #[repr(C)]
 pub struct Affine2 {
-    pub comps: [f64; 6],
+    pub comps: [f32; 6],
 }
 
 impl Marshal for Affine2 {

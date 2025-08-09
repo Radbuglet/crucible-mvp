@@ -9,6 +9,8 @@ use futures::{
     task::LocalSpawnExt as _,
 };
 
+pub extern crate futures;
+
 thread_local! {
     static EXECUTE_SPAWNER: (RefCell<LocalPool>, LocalSpawner) = {
         let pool = LocalPool::new();

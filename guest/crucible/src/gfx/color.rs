@@ -3,7 +3,7 @@ use std::fmt;
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec3, Vec4};
 
-// === Color8 === //
+// === Bgra8 === //
 
 macro_rules! conversions {
     ($(
@@ -13,7 +13,7 @@ macro_rules! conversions {
         ;
     )*) => {
         $(
-            impl Color8 {
+            impl Bgra8 {
                 pub const fn $from($from_arg: $ty) -> Self {
                     $from_expr
                 }
@@ -24,14 +24,14 @@ macro_rules! conversions {
                 }
             }
 
-            impl From<$ty> for Color8 {
+            impl From<$ty> for Bgra8 {
                 fn from(other: $ty) -> Self {
                     Self::$from(other)
                 }
             }
 
-            impl From<Color8> for $ty {
-                fn from(other: Color8) -> Self {
+            impl From<Bgra8> for $ty {
+                fn from(other: Bgra8) -> Self {
                     other.$to()
                 }
             }
@@ -41,21 +41,21 @@ macro_rules! conversions {
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Pod, Zeroable)]
 #[repr(C)]
-pub struct Color8 {
+pub struct Bgra8 {
     pub b: u8,
     pub g: u8,
     pub r: u8,
     pub a: u8,
 }
 
-impl fmt::Debug for Color8 {
+impl fmt::Debug for Bgra8 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self { r, g, b, a } = self;
-        write!(f, "Color8({r}, {g}, {b}, {a})")
+        write!(f, "Bgra8({r}, {g}, {b}, {a})")
     }
 }
 
-impl Color8 {
+impl Bgra8 {
     pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
     }
@@ -130,7 +130,7 @@ conversions! {
 
 // === Palette === //
 
-impl Color8 {
+impl Bgra8 {
     pub const ZERO: Self = Self::from_bytes([0; 4]);
     pub const LIGHTGRAY: Self = Self::from_floats([0.78, 0.78, 0.78, 1.00]);
     pub const GRAY: Self = Self::from_floats([0.51, 0.51, 0.51, 1.00]);

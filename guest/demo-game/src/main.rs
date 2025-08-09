@@ -1,36 +1,28 @@
-use std::panic;
-
 use crucible::{
     base::{
-        log::{LogLevel, log_str},
-        run_loop::{MainLoopEvent, confirm_app_exit, next_event, request_loop_wakeup},
-        task::spawn_task,
+        env::IntervalTimer,
+        logging::setup_logger,
+        task::{
+            futures::{self, FutureExt},
+            spawn_task,
+        },
     },
     gfx::{
-        color::Color8,
-        texture::{CpuTexture, GpuDrawArgs, GpuTexture},
+        color::Bgra8,
+        texture::{CpuTexture, GpuDrawArgs},
     },
-    window::run_loop::{ClientEvent, request_redraw},
-};
-use cruise::{
-    arid::World,
-    base::run_loop::{StepResult, StepTimer},
+    window::app::{Window, WindowEvent},
 };
 use glam::{UVec2, Vec2, Vec3};
 
 fn main() {
-    panic::set_hook(Box::new(|info| {
-        log_str(LogLevel::Fatal, &format!("{info}"));
-    }));
-
+    setup_logger();
     spawn_task(main_loop());
 }
 
 async fn main_loop() {
-    let mut w = World::new();
-    let w = &mut w;
-
-    let mut timer = StepTimer::new(1. / 60.);
+    let mut window = Window::acquire();
+    let mut timer = IntervalTimer::new(1. / 60.);
 
     let mut my_texture = CpuTexture::new(UVec2::new(100, 100));
     let my_texture_size = my_texture.size();
@@ -43,41 +35,33 @@ async fn main_loop() {
 
     let my_texture = my_texture.make_gpu();
 
-    request_loop_wakeup(0.0);
-
     loop {
-        match next_event().await {
-            MainLoopEvent::ExitRequested => {
-                break;
-            }
-            MainLoopEvent::TimerExpired => {
-                let StepResult {
-                    times_ticked,
-                    wait_until,
-                } = timer.tick();
-
-                for _ in 0..times_ticked {
+        futures::select! {
+            (times_ticked, _alpha) = timer.next().fuse() => {
+                for _ in 0..times_ticked.get() {
                     // TODO
                 }
 
-                request_loop_wakeup(wait_until);
-                request_redraw();
+                window.request_redraw();
             }
-            MainLoopEvent::Client(ClientEvent::Redraw) => {
-                let mut fb = GpuTexture::swapchain();
+            ev = window.next_event().fuse() => {
+                match ev {
+                    WindowEvent::Redraw(mut fb) => {
+                        fb.clear(Bgra8::WHITE);
 
-                fb.clear(Color8::WHITE);
-
-                fb.draw(
-                    GpuDrawArgs::new()
-                        .textured(&my_texture)
-                        .scale(Vec2::splat(500.))
-                        .translate(Vec2::new(100., 200.)),
-                );
+                        fb.draw(
+                            GpuDrawArgs::new()
+                                .textured(&my_texture)
+                                .scale(Vec2::splat(500.))
+                                .translate(Vec2::new(100., 200.)),
+                        );
+                    }
+                    WindowEvent::KeyEvent(ev) => {
+                        dbg!(ev);
+                    }
+                    _ => {}
+                }
             }
-            _ => {}
         }
     }
-
-    confirm_app_exit();
 }

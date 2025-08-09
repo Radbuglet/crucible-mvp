@@ -611,6 +611,12 @@ impl<T> FfiOption<T> {
     }
 }
 
+impl<T> From<Option<T>> for FfiOption<T> {
+    fn from(value: Option<T>) -> Self {
+        Self::new(value)
+    }
+}
+
 // Strategy
 impl<T: Marshal> Marshal for Option<T> {
     type Strategy = Option<T::Strategy>;
@@ -780,6 +786,12 @@ impl<'a, T> GuestSliceRef<'a, T> {
 
     pub fn decode(self) -> &'a [T] {
         unsafe { &*self.slice.guest_ptr() }
+    }
+}
+
+impl<'a, T> From<&'a [T]> for GuestSliceRef<'a, T> {
+    fn from(values: &'a [T]) -> Self {
+        Self::new(values)
     }
 }
 
@@ -1284,7 +1296,7 @@ cfgenius::cond! {
 pub type OwnedGuestClosure<I> = OwnedGuestClosure_<StrategyOf<I>>;
 pub type GuestClosure<I> = GuestClosure_<StrategyOf<I>>;
 
-#[derive(Debug)]
+#[derive_where(Debug)]
 #[repr(transparent)]
 pub struct OwnedGuestClosure_<I: Strategy> {
     raw: GuestClosure_<I>,
@@ -1301,7 +1313,7 @@ impl<I: Strategy> OwnedGuestClosure_<I> {
         Self { raw }
     }
 
-    pub fn unmanaged(&self) -> GuestClosure_<I> {
+    pub fn handle(&self) -> GuestClosure_<I> {
         self.raw
     }
 
@@ -1532,7 +1544,7 @@ macro_rules! bind_port {
         $(#[$meta])*
         $vis fn $name(input: &$crate::bind_port_internals::HostboundOf<$input>) -> ($($crate::bind_port_internals::GuestboundOf<$out>)?) {
             const _: () = {
-                $crate::bind_port_internals::Port::<$input, ($($out)?)>::new_hostbound(
+                $crate::bind_port_internals::Port::<$input, ($($out)?)>::new(
                     $module,
                     $crate::bind_port_internals::stringify!($name),
                 )

@@ -6,7 +6,9 @@ edition = "2024"
 [dependencies]
 bitflags = "2.9.1"
 bytemuck = { version = "1.23.1", features = ["min_const_generics", "derive"] }
+crucible-abi.workspace = true
 enum-ordinalize = "4.3.0"
 futures = "0.3.31"
-glam = "0.30.4"
+glam = { version = "0.30.4", features = ["bytemuck"] }
 scopeguard = "1.2.0"
+wasmlink.workspace = true

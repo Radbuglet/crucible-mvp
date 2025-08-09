@@ -5,8 +5,6 @@ use wasmlink::{Marshal, PodMarshal, Port, marshal_enum, marshal_struct};
 
 pub const GET_RUN_MODE: Port<(), RunMode> = Port::new("crucible", "get_run_mode");
 
-pub const CONFIRM_APP_EXIT: Port<()> = Port::new("crucible", "confirm_app_exit");
-
 marshal_enum! {
     pub enum RunMode : u8 {
         Server,

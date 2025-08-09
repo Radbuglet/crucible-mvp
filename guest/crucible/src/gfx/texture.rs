@@ -1,8 +1,9 @@
-use std::{iter, ptr, slice};
+use std::{iter, slice};
 
 use glam::{Affine2, UVec2, Vec2};
+use wasmlink::{GuestSliceRef, bind_port};
 
-use super::{color::Color8, rect::Rect};
+use super::{color::Bgra8, rect::Rect};
 
 // === Position Math === //
 
@@ -61,14 +62,14 @@ impl Iterator for PixelPositions {
 
 // === CpuTexture === //
 
-pub type CpuPixelPositions<'a> = iter::Zip<PixelPositions, iter::Copied<slice::Iter<'a, Color8>>>;
+pub type CpuPixelPositions<'a> = iter::Zip<PixelPositions, iter::Copied<slice::Iter<'a, Bgra8>>>;
 
-pub type CpuPixelPositionsMut<'a> = iter::Zip<PixelPositions, slice::IterMut<'a, Color8>>;
+pub type CpuPixelPositionsMut<'a> = iter::Zip<PixelPositions, slice::IterMut<'a, Bgra8>>;
 
 #[derive(Debug, Clone)]
 pub struct CpuTexture {
     size: UVec2,
-    pixels: Vec<Color8>,
+    pixels: Vec<Bgra8>,
 }
 
 impl CpuTexture {
@@ -76,12 +77,12 @@ impl CpuTexture {
         Self {
             size,
             pixels: (0..size.x as usize * size.y as usize)
-                .map(|_| Color8::ZERO)
+                .map(|_| Bgra8::ZERO)
                 .collect(),
         }
     }
 
-    pub fn from_fn(size: UVec2, mut f: impl FnMut(usize, UVec2) -> Color8) -> Self {
+    pub fn from_fn(size: UVec2, mut f: impl FnMut(usize, UVec2) -> Bgra8) -> Self {
         Self {
             size,
             pixels: (0..size.x as usize * size.y as usize)
@@ -91,13 +92,13 @@ impl CpuTexture {
         }
     }
 
-    pub fn from_raw(size: UVec2, pixels: Vec<Color8>) -> Self {
+    pub fn from_raw(size: UVec2, pixels: Vec<Bgra8>) -> Self {
         assert_eq!(size.x * size.y, pixels.len() as u32);
 
         Self { size, pixels }
     }
 
-    pub fn to_raw(self) -> Vec<Color8> {
+    pub fn to_raw(self) -> Vec<Bgra8> {
         self.pixels
     }
 
@@ -113,11 +114,11 @@ impl CpuTexture {
         self.size.y
     }
 
-    pub fn pixels(&self) -> &[Color8] {
+    pub fn pixels(&self) -> &[Bgra8] {
         &self.pixels
     }
 
-    pub fn pixels_mut(&mut self) -> &mut [Color8] {
+    pub fn pixels_mut(&mut self) -> &mut [Bgra8] {
         &mut self.pixels
     }
 
@@ -141,11 +142,11 @@ impl CpuTexture {
         pos_to_index(self.width(), pos)
     }
 
-    pub fn pixel(&self, at: UVec2) -> Color8 {
+    pub fn pixel(&self, at: UVec2) -> Bgra8 {
         self.pixels()[self.pos_to_index(at)]
     }
 
-    pub fn pixel_mut(&mut self, at: UVec2) -> &mut Color8 {
+    pub fn pixel_mut(&mut self, at: UVec2) -> &mut Bgra8 {
         let idx = self.pos_to_index(at);
 
         &mut self.pixels_mut()[idx]
@@ -162,35 +163,20 @@ impl CpuTexture {
 
 #[derive(Debug)]
 pub struct GpuTexture {
-    handle: u32,
-    size: UVec2,
+    pub(crate) handle: crucible_abi::GpuTextureHandle,
+    pub(crate) size: UVec2,
 }
 
 impl GpuTexture {
     pub fn new(size: UVec2) -> Self {
-        #[link(wasm_import_module = "crucible")]
-        unsafe extern "C" {
-            fn create_texture(width: u32, height: u32) -> u32;
+        bind_port! {
+            fn [crucible_abi::GPU_CREATE_TEXTURE] "crucible".gpu_create_texture(crucible_abi::UVec2)
+                -> crucible_abi::GpuTextureHandle;
         }
 
         Self {
-            handle: unsafe { create_texture(size.x, size.y) },
+            handle: gpu_create_texture(&bytemuck::cast(size)),
             size,
-        }
-    }
-
-    pub fn swapchain() -> Self {
-        #[link(wasm_import_module = "crucible")]
-        unsafe extern "C" {
-            fn get_swapchain_texture(out_size: *mut [u32; 2]) -> u32;
-        }
-
-        let mut size = [0; 2];
-        let handle = unsafe { get_swapchain_texture(&mut size) };
-
-        Self {
-            handle,
-            size: UVec2::new(size[0], size[1]),
         }
     }
 
@@ -210,46 +196,36 @@ impl GpuTexture {
         Rect::new(0, 0, self.width(), self.height())
     }
 
-    pub fn clear(&mut self, color: Color8) {
-        #[link(wasm_import_module = "crucible")]
-        unsafe extern "C" {
-            fn clear_texture(target_id: u32, color: u32);
+    pub fn clear(&mut self, color: Bgra8) {
+        bind_port! {
+            fn [crucible_abi::GPU_CLEAR_TEXTURE] "crucible".gpu_clear_texture(crucible_abi::GpuClearTextureArgs);
         }
 
-        unsafe { clear_texture(self.handle, u32::from_le_bytes(color.to_bytes())) };
+        gpu_clear_texture(&crucible_abi::GpuClearTextureArgs {
+            handle: self.handle,
+            color: bytemuck::cast(color),
+        });
     }
 
     pub fn upload(&mut self, src: &CpuTexture, at: UVec2, clip: Option<Rect>) {
-        #[link(wasm_import_module = "crucible")]
-        unsafe extern "C" {
-            fn upload_texture(
-                target_id: u32,
-                buffer: *const Color8,
-                buffer_width: u32,
-                buffer_height: u32,
-                at_x: u32,
-                at_y: u32,
-                clip: *const [u32; 4],
-            );
+        bind_port! {
+            fn [crucible_abi::GPU_UPLOAD_TEXTURE] "crucible".gpu_upload_texture(crucible_abi::GpuUploadTextureArgs);
         }
 
-        let clip = clip.map(|rect| [rect.top.x, rect.top.y, rect.size.x, rect.size.y]);
-        let clip = clip.map_or(ptr::null(), |clip| &clip);
-
-        unsafe {
-            upload_texture(
-                self.handle,
-                src.pixels.as_ptr(),
-                src.size.x,
-                src.size.y,
-                at.x,
-                at.y,
-                clip,
-            );
-        }
+        gpu_upload_texture(&crucible_abi::GpuUploadTextureArgs {
+            handle: self.handle,
+            buffer: GuestSliceRef::new(bytemuck::cast_slice(src.pixels())),
+            buffer_size: bytemuck::cast(self.size),
+            at: bytemuck::cast(at),
+            clip: clip.map(bytemuck::cast).into(),
+        });
     }
 
     pub fn draw(&mut self, args: GpuDrawArgs<'_>) {
+        bind_port! {
+            fn [crucible_abi::GPU_DRAW_TEXTURE] "crucible".gpu_draw_texture(crucible_abi::GpuDrawTextureArgs);
+        }
+
         let GpuDrawArgs {
             texture,
             transform,
@@ -258,52 +234,34 @@ impl GpuTexture {
             tint,
         } = args;
 
-        #[link(wasm_import_module = "crucible")]
-        unsafe extern "C" {
-            fn draw_texture(
-                target_id: u32,
-                src_id: u32,
-                transform: *const [f32; 6],
-                clip: *const [u32; 4],
-                tint: u32,
-            );
-        }
+        let transform = transform_mode.normalize_xf(
+            transform,
+            texture.map_or_else(
+                || clip.map_or(UVec2::ONE, |v| v.size),
+                |texture| texture.size,
+            ),
+            self.size,
+        );
 
-        let transform = transform_mode
-            .normalize_xf(
-                transform,
-                texture.map_or_else(
-                    || clip.map_or(UVec2::ONE, |v| v.size),
-                    |texture| texture.size,
-                ),
-                self.size,
-            )
-            .to_cols_array();
-
-        let clip = clip.map(|rect| [rect.top.x, rect.top.y, rect.size.x, rect.size.y]);
-        let clip = clip.map_or(ptr::null(), |clip| &clip);
-        let tint = u32::from_le_bytes(tint.to_bytes());
-
-        unsafe {
-            draw_texture(
-                self.handle,
-                texture.map_or(0, |v| v.handle),
-                &transform,
-                clip,
-                tint,
-            )
-        };
+        gpu_draw_texture(&crucible_abi::GpuDrawTextureArgs {
+            dst_handle: self.handle,
+            src_handle: texture.as_ref().map(|v| v.handle).into(),
+            transform: crucible_abi::Affine2 {
+                comps: transform.to_cols_array(),
+            },
+            clip: clip.map(bytemuck::cast).into(),
+            tint: bytemuck::cast(tint),
+        });
     }
 }
 
 impl Drop for GpuTexture {
     fn drop(&mut self) {
-        #[link(wasm_import_module = "crucible")]
-        unsafe extern "C" {
-            fn destroy_texture(handle: u32);
+        bind_port! {
+            fn [crucible_abi::GPU_DESTROY_TEXTURE] "crucible".gpu_destroy_texture(crucible_abi::GpuTextureHandle);
         }
 
-        unsafe { destroy_texture(self.handle) };
+        gpu_destroy_texture(&self.handle);
     }
 }
 
@@ -315,7 +273,7 @@ pub struct GpuDrawArgs<'a> {
     pub transform: Affine2,
     pub transform_mode: TransformMode,
     pub clip: Option<Rect>,
-    pub tint: Color8,
+    pub tint: Bgra8,
 }
 
 impl Default for GpuDrawArgs<'_> {
@@ -331,7 +289,7 @@ impl<'a> GpuDrawArgs<'a> {
             transform: Affine2::IDENTITY,
             transform_mode: TransformMode::default(),
             clip: None,
-            tint: Color8::from_bytes([0xFF; 4]),
+            tint: Bgra8::from_bytes([0xFF; 4]),
         }
     }
 
@@ -360,7 +318,7 @@ impl<'a> GpuDrawArgs<'a> {
         self
     }
 
-    pub fn tint(mut self, color: Color8) -> Self {
+    pub fn tint(mut self, color: Bgra8) -> Self {
         self.tint = color;
         self
     }

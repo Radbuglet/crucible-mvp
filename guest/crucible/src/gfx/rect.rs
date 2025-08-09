@@ -1,6 +1,8 @@
+use bytemuck::{Pod, Zeroable};
 use glam::UVec2;
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Pod, Zeroable)]
+#[repr(C)]
 pub struct Rect {
     pub top: UVec2,
     pub size: UVec2,
