@@ -1,0 +1,11 @@
+[package]
+name = "wasmlink-wasmtime"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.98"
+arid = "0.1.0"
+scopeguard = "1.2.0"
+wasmlink.workspace = true
+wasmtime = "35.0.0"

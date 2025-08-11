@@ -176,11 +176,13 @@ impl<T> FfiPtr<T> {
 
 impl<T: Pod> FfiPtr<T> {
     pub fn read(self, cx: &impl HostContext) -> Result<&T, HostMarshalError> {
-        Ok(&cx.read(self.addr(), 1)?[0])
+        let [value] = cx.read_array(self.addr())?;
+        Ok(value)
     }
 
     pub fn write(self, cx: &mut impl HostContext) -> Result<&mut T, HostMarshalError> {
-        Ok(&mut cx.write(self.addr(), 1)?[0])
+        let [value] = cx.write_array(self.addr())?;
+        Ok(value)
     }
 }
 
@@ -262,11 +264,11 @@ impl<T> FfiSliceIndexable for FfiSlice<T> {
 
 impl<T: Pod> FfiSlice<T> {
     pub fn read(self, cx: &impl HostContext) -> Result<&[T], HostMarshalError> {
-        cx.read(self.base().addr(), self.len())
+        cx.read_slice(self.base().addr(), self.len())
     }
 
     pub fn write(self, cx: &mut impl HostContext) -> Result<&mut [T], HostMarshalError> {
-        cx.write(self.base().addr(), self.len())
+        cx.write_slice(self.base().addr(), self.len())
     }
 }
 
@@ -342,24 +344,75 @@ pub type HostboundViewOf<M> = <StrategyOf<M> as Strategy>::HostboundView;
 pub type GuestboundViewOf<'a, M> = <StrategyOf<M> as Strategy>::GuestboundView<'a>;
 
 #[derive(Debug, Clone)]
-pub struct HostMarshalError;
+pub struct HostMarshalError(pub &'static str);
 
 impl fmt::Display for HostMarshalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("failed to marshal value on host")
+        f.write_str("failed to marshal value on host: ")?;
+        f.write_str(self.0)?;
+        Ok(())
     }
 }
 
 impl Error for HostMarshalError {}
 
 pub trait HostContext: Sized {
-    fn read<T: Pod>(&self, base: u32, len: u32) -> Result<&[T], HostMarshalError>;
+    fn guest_memory(&self) -> &[u8];
 
-    fn write<T: Pod>(&mut self, base: u32, len: u32) -> Result<&mut [T], HostMarshalError>;
+    fn guest_memory_mut(&mut self) -> &mut [u8];
 
     fn alloc(&mut self, align: u32, size: u32) -> Result<FfiPtr<()>, HostMarshalError>;
 
-    fn call(&mut self, id: u64, boxed_arg: u32) -> Result<(), HostMarshalError>;
+    fn invoke(&mut self, id: u64, boxed_arg: u32) -> Result<(), HostMarshalError>;
+
+    fn read_slice<T: Pod>(&self, base: u32, len: u32) -> Result<&[T], HostMarshalError> {
+        let bytes = self
+            .guest_memory()
+            .get(base as usize..)
+            .ok_or(HostMarshalError("memory base address too large"))?
+            .get(
+                ..mem::size_of::<T>()
+                    .checked_mul(len as usize)
+                    .ok_or(HostMarshalError("arithmetic overflow during addressing"))?,
+            )
+            .ok_or(HostMarshalError("read past bounds of memory"))?;
+
+        let bytes = bytemuck::try_cast_slice::<u8, T>(bytes)
+            .map_err(|_| HostMarshalError("failed to convert byte view to POD slice"))?;
+
+        Ok(bytes)
+    }
+
+    fn write_slice<T: Pod>(&mut self, base: u32, len: u32) -> Result<&mut [T], HostMarshalError> {
+        let bytes = self
+            .guest_memory_mut()
+            .get_mut(base as usize..)
+            .ok_or(HostMarshalError("memory base address too large"))?
+            .get_mut(
+                ..mem::size_of::<T>()
+                    .checked_mul(len as usize)
+                    .ok_or(HostMarshalError("arithmetic overflow during addressing"))?,
+            )
+            .ok_or(HostMarshalError("read past bounds of memory"))?;
+
+        let bytes = bytemuck::try_cast_slice_mut::<u8, T>(bytes)
+            .map_err(|_| HostMarshalError("failed to convert byte view to POD slice"))?;
+
+        Ok(bytes)
+    }
+
+    fn read_array<T: Pod, const N: usize>(&self, addr: u32) -> Result<&[T; N], HostMarshalError> {
+        self.read_slice(addr, N as u32)
+            .map(|v| &bytemuck::cast_slice::<T, [T; N]>(v)[0])
+    }
+
+    fn write_array<T: Pod, const N: usize>(
+        &mut self,
+        addr: u32,
+    ) -> Result<&mut [T; N], HostMarshalError> {
+        self.write_slice(addr, N as u32)
+            .map(|v| &mut bytemuck::cast_slice_mut::<T, [T; N]>(v)[0])
+    }
 }
 
 pub trait Marshal: Sized + 'static {
@@ -539,7 +592,7 @@ unsafe impl ConvertMarshal for bool {
         match raw {
             0 => Ok(false),
             1 => Ok(true),
-            _ => Err(HostMarshalError),
+            _ => Err(HostMarshalError("boolean was neither `0` nor `1`")),
         }
     }
 }
@@ -554,7 +607,7 @@ unsafe impl ConvertMarshal for char {
     fn try_from_raw(
         raw: <Self::Raw as UnifiedStrategy>::Unified,
     ) -> Result<Self, HostMarshalError> {
-        char::try_from(raw).map_err(|_| HostMarshalError)
+        char::try_from(raw).map_err(|_| HostMarshalError("invalid unicode codepoint"))
     }
 }
 
@@ -970,7 +1023,8 @@ impl HostStr {
     }
 
     pub fn read(self, cx: &impl HostContext) -> Result<&str, HostMarshalError> {
-        std::str::from_utf8(self.slice.read(cx)?).map_err(|_| HostMarshalError)
+        std::str::from_utf8(self.slice.read(cx)?)
+            .map_err(|_| HostMarshalError("invalid UTF-8 sequence"))
     }
 }
 
@@ -1217,7 +1271,7 @@ macro_rules! marshal_enum {
                 )*
                 match *ptr.cast::<$crate::marshal_enum_internals::primitives::$repr>().read(cx)? {
                     $($variant_name => Ok(Self::$variant_name),)*
-                    _ => Err($crate::marshal_enum_internals::HostMarshalError),
+                    _ => Err($crate::marshal_enum_internals::HostMarshalError("unknown enum variant")),
                 }
             }
 
@@ -1275,7 +1329,7 @@ impl<I: Strategy> HostClosure_<I> {
 
         <I::Strategy>::encode_guestbound(cx, arg_out, arg)?;
 
-        cx.call(self.id, arg_out.addr())?;
+        cx.invoke(self.id, arg_out.addr())?;
 
         Ok(())
     }
@@ -1570,10 +1624,13 @@ macro_rules! bind_port {
 
 // === Guest Exports === //
 
+pub const BUILTIN_MEM_ALLOC: &str = "rust_wasmlink_mem_alloc";
+pub const BUILTIN_CLOSURE_INVOKE: &str = "rust_wasmlink_closure_invoke";
+
 cfgenius::cond! {
     if macro(is_wasm) {
         #[unsafe(no_mangle)]
-        unsafe extern "C" fn rust_wasmlink_mem_alloc(size: usize, align: usize) -> *mut u8 {
+        unsafe extern "C" fn rust_wasmlink_mem_alloc(align: usize, size: usize) -> *mut u8 {
             let layout = std::alloc::Layout::from_size_align(size, align).unwrap();
 
             if layout.size() == 0 {

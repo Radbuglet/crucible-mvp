@@ -7,6 +7,7 @@ members = [
     "host/renderer",
     "host/server",
     "host/shared",
+    "host/wasmlink-wasmtime",
     "shared/crucible-abi",
     "shared/wasmlink",
 ]
@@ -17,6 +18,7 @@ crucible-abi = { path = "shared/crucible-abi" }
 crucible-renderer = { path = "host/renderer" }
 crucible-shared = { path = "host/shared" }
 wasmlink = { path = "shared/wasmlink" }
+wasmlink-wasmtime = { path = "host/wasmlink-wasmtime" }
 
 [profile.dev.package."*"]
 opt-level = 2
