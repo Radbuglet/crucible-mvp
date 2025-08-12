@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+
 use futures::{StreamExt, channel::mpsc};
 use glam::DVec2;
 use wasmlink::{OwnedGuestClosure, bind_port};
@@ -11,6 +13,8 @@ use crate::{
 use super::keyboard::KeyEvent;
 
 // === Window === //
+
+static HAS_WINDOW_SINGLETON: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
 pub struct Window {
@@ -31,6 +35,13 @@ pub enum WindowEvent {
 impl Window {
     pub fn acquire() -> Self {
         RunMode::get().assert_client();
+
+        assert!(
+            HAS_WINDOW_SINGLETON
+                .compare_exchange(false, true, Relaxed, Relaxed)
+                .is_ok(),
+            "`Window` singleton already acquired"
+        );
 
         bind_port! {
             fn [crucible_abi::WINDOW_BIND_HANDLERS] "crucible".window_bind_handlers(crucible_abi::WindowHandlers);
@@ -124,5 +135,7 @@ impl Drop for Window {
         }
 
         window_unbind_handlers(&());
+
+        HAS_WINDOW_SINGLETON.store(false, Relaxed);
     }
 }

@@ -33,13 +33,13 @@ struct WslExports {
 }
 
 pub trait WslStoreExt {
-    fn setup_exports(&mut self, instance: wasmtime::Instance) -> anyhow::Result<()>;
+    fn setup_wsl_exports(&mut self, instance: wasmtime::Instance) -> anyhow::Result<()>;
 
     fn run_root<R>(&mut self, world: &mut World, f: impl FnOnce(&mut WslContext<'_>) -> R) -> R;
 }
 
 impl WslStoreExt for WslStore {
-    fn setup_exports(&mut self, instance: wasmtime::Instance) -> anyhow::Result<()> {
+    fn setup_wsl_exports(&mut self, instance: wasmtime::Instance) -> anyhow::Result<()> {
         let exports = WslExports {
             memory: instance
                 .get_memory(&mut *self, "memory")

@@ -6,6 +6,7 @@ use std::{
     marker::PhantomData,
     mem::{self, MaybeUninit},
     ops::{Deref, Range},
+    ptr, slice,
 };
 
 use bytemuck::{Pod, TransparentWrapper, Zeroable};
@@ -366,6 +367,10 @@ pub trait HostContext: Sized {
     fn invoke(&mut self, id: u64, boxed_arg: u32) -> Result<(), HostMarshalError>;
 
     fn read_slice<T: Pod>(&self, base: u32, len: u32) -> Result<&[T], HostMarshalError> {
+        if mem::size_of::<T>() == 0 {
+            return Ok(unsafe { slice::from_raw_parts(ptr::dangling::<T>(), len as usize) });
+        }
+
         let bytes = self
             .guest_memory()
             .get(base as usize..)
@@ -384,6 +389,12 @@ pub trait HostContext: Sized {
     }
 
     fn write_slice<T: Pod>(&mut self, base: u32, len: u32) -> Result<&mut [T], HostMarshalError> {
+        if mem::size_of::<T>() == 0 {
+            return Ok(unsafe {
+                slice::from_raw_parts_mut(ptr::dangling_mut::<T>(), len as usize)
+            });
+        }
+
         let bytes = self
             .guest_memory_mut()
             .get_mut(base as usize..)
@@ -1605,8 +1616,8 @@ macro_rules! bind_port {
                 .assert_compatible($matches_port)
             };
 
+            #[link(wasm_import_module = $module)]
             unsafe extern "C" {
-                #[link(wasm_module_name = $module)]
                 fn $name(
                     input: &$crate::bind_port_internals::HostboundOf<$input>,
                     output: *mut $crate::bind_port_internals::GuestboundOf<($($out)?)>,

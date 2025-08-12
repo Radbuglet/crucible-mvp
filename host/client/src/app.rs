@@ -59,27 +59,35 @@ impl FallibleApplicationHandler for App {
 
             window_mgr.create_window(window.clone(), surface, w);
 
-            // Setup WASM
+            // Setup WASM linker
             let mut linker = WslLinker::new(&self.engine);
-            linker.allow_unknown_exports(true);
 
-            let env_bindings = EnvBindingsHandle::new(w);
+            let env_bindings = self.root.add(EnvBindingsHandle::new(w), w);
             env_bindings.install(&mut linker)?;
 
-            let gfx_bindings = GfxBindingsHandle::new(w);
+            let gfx_bindings = self.root.add(GfxBindingsHandle::new(w), w);
             gfx_bindings.install(&mut linker)?;
 
+            linker.define_unknown_imports_as_traps(&self.module)?;
+
+            // Instantiate module
             let mut store = wasmtime::Store::new(&self.engine, WslStoreState::default());
 
             let instance = linker.instantiate(&mut store, &self.module)?;
+
+            store.setup_wsl_exports(instance)?;
+
+            instance
+                .get_typed_func::<(u32, u32), u32>(&mut store, "main")?
+                .call(&mut store, (0, 0))?;
 
             // Mark as initialized
             window.set_visible(true);
 
             self.init = Some(AppInitState {
                 window_mgr: window_mgr.as_weak(),
-                env_bindings: env_bindings.as_weak(),
-                gfx_bindings: gfx_bindings.as_weak(),
+                env_bindings,
+                gfx_bindings,
                 store,
                 instance,
             });

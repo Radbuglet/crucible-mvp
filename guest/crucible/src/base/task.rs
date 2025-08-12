@@ -29,6 +29,8 @@ where
         .with(|(_, spawner)| spawner.spawn_local_with_handle(task))
         .expect("spawner already shut down");
 
+    wake_executor();
+
     TaskHandle {
         handle: ManuallyDrop::new(handle),
     }

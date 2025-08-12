@@ -60,6 +60,6 @@ marshal_enum! {
         Info,
         Warn,
         Error,
-        Fatal,
+        Panic,
     }
 }
