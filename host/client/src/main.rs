@@ -4,7 +4,8 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 mod app;
-mod runtime;
+mod bindings;
+mod services;
 mod utils;
 
 fn main() -> anyhow::Result<()> {

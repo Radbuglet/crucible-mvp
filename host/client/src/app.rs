@@ -1,60 +1,50 @@
-use std::{cell::RefCell, env, fs, rc::Rc, sync::Arc};
+use std::{env, fs, sync::Arc};
 
 use anyhow::Context;
-use crucible_renderer::{GfxContext, TEXTURE_FORMAT};
-use crucible_shared::{
-    runtime::{RtFfi, RtLogger, RtTime},
-    utils::wasm::{MainMemory, RtFieldExt, RtModule as _, RtState},
-};
+use arid::{Strong, World};
+use arid_entity::EntityHandle;
 use futures::executor::block_on;
+use wasmlink_wasmtime::{WslLinker, WslStore, WslStoreExt, WslStoreState};
 use winit::{
     event::{KeyEvent, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    keyboard::PhysicalKey,
-    window::{Window, WindowAttributes, WindowId},
+    window::{WindowAttributes, WindowId},
 };
 
 use crate::{
-    runtime::{main_loop::RtMainLoop, renderer::RtRenderer},
+    bindings::{env::EnvBindingsHandle, gfx::GfxBindingsHandle},
+    services::window::{WindowManagerHandle, create_gfx_context},
     utils::winit::{FallibleApplicationHandler, is_in_live_resize, run_app_fallible},
 };
 
 #[derive(Debug)]
 struct App {
+    world: World,
+    root: Strong<EntityHandle>,
     engine: wasmtime::Engine,
-    linker: wasmtime::Linker<RtState>,
-    wgpu_instance: wgpu::Instance,
-
-    current_game: Option<ActiveGameState>,
-    gfx_state: Option<ActiveGfxState>,
-
-    error: Option<anyhow::Error>,
-}
-
-#[derive(Debug)]
-struct ActiveGameState {
     module: wasmtime::Module,
-    store: wasmtime::Store<RtState>,
-    instance: wasmtime::Instance,
+    init: Option<AppInitState>,
 }
 
 #[derive(Debug)]
-struct ActiveGfxState {
-    window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    context: Rc<RefCell<GfxContext>>,
+struct AppInitState {
+    window_mgr: WindowManagerHandle,
+    env_bindings: EnvBindingsHandle,
+    gfx_bindings: GfxBindingsHandle,
+    store: WslStore,
+    instance: wasmtime::Instance,
 }
 
 impl FallibleApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        block_on(async {
-            if self.gfx_state.is_some() {
-                return Ok(());
-            }
+        let w = &mut self.world;
 
+        if self.init.is_some() {
+            return Ok(());
+        }
+
+        block_on(async {
+            // Setup graphics
             let window = Arc::new(
                 event_loop.create_window(
                     WindowAttributes::default()
@@ -63,49 +53,35 @@ impl FallibleApplicationHandler for App {
                 )?,
             );
 
-            let surface = self
-                .wgpu_instance
-                .create_surface(window.clone())
-                .context("failed to create main surface")?;
+            let (gfx, surface) = create_gfx_context(window.clone()).await?;
+            let window_mgr = WindowManagerHandle::new(gfx, w);
+            self.root.add(window_mgr.clone(), w);
 
-            let adapter = self
-                .wgpu_instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    force_fallback_adapter: false,
-                    compatible_surface: Some(&surface),
-                })
-                .await?;
+            window_mgr.create_window(window.clone(), surface, w);
 
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: crucible_renderer::required_features(),
-                    required_limits: wgpu::Limits {
-                        max_binding_array_elements_per_shader_stage: 32,
-                        ..wgpu::Limits::default()
-                    },
-                    memory_hints: wgpu::MemoryHints::default(),
-                    trace: wgpu::Trace::Off,
-                })
-                .await?;
+            // Setup WASM
+            let mut linker = WslLinker::new(&self.engine);
+            linker.allow_unknown_exports(true);
 
-            let context = Rc::new(RefCell::new(GfxContext::new(device.clone())));
+            let env_bindings = EnvBindingsHandle::new(w);
+            env_bindings.install(&mut linker)?;
 
-            RtRenderer::init(
-                &mut self.current_game.as_mut().unwrap().store,
-                context.clone(),
-            )?;
+            let gfx_bindings = GfxBindingsHandle::new(w);
+            gfx_bindings.install(&mut linker)?;
 
+            let mut store = wasmtime::Store::new(&self.engine, WslStoreState::default());
+
+            let instance = linker.instantiate(&mut store, &self.module)?;
+
+            // Mark as initialized
             window.set_visible(true);
 
-            self.gfx_state = Some(ActiveGfxState {
-                window,
-                surface,
-                adapter,
-                device,
-                queue,
-                context,
+            self.init = Some(AppInitState {
+                window_mgr: window_mgr.as_weak(),
+                env_bindings: env_bindings.as_weak(),
+                gfx_bindings: gfx_bindings.as_weak(),
+                store,
+                instance,
             });
 
             Ok(())
@@ -117,8 +93,13 @@ impl FallibleApplicationHandler for App {
         _event_loop: &ActiveEventLoop,
         cause: StartCause,
     ) -> anyhow::Result<()> {
+        let Some(init) = &mut self.init else {
+            return Ok(());
+        };
+
         if matches!(cause, StartCause::ResumeTimeReached { .. }) {
-            RtMainLoop::timer_expired(&mut self.current_game.as_mut().unwrap().store)?;
+            init.store
+                .run_root(&mut self.world, |cx| init.env_bindings.poll_timeouts(cx))?;
         }
 
         Ok(())
@@ -130,51 +111,16 @@ impl FallibleApplicationHandler for App {
         window_id: WindowId,
         event: WindowEvent,
     ) -> anyhow::Result<()> {
-        let Some(gfx_state) = &mut self.gfx_state else {
+        let Some(init) = &mut self.init else {
             return Ok(());
         };
 
         match &event {
             WindowEvent::RedrawRequested => {
-                let window_size = gfx_state.window.inner_size();
-
-                gfx_state.surface.configure(
-                    &gfx_state.device,
-                    &wgpu::SurfaceConfiguration {
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                        format: TEXTURE_FORMAT,
-                        width: window_size.width,
-                        height: window_size.height,
-                        present_mode: wgpu::PresentMode::default(),
-                        desired_maximum_frame_latency: 2,
-                        alpha_mode: wgpu::CompositeAlphaMode::default(),
-                        view_formats: Vec::new(),
-                    },
-                );
-
-                let texture = gfx_state.surface.get_current_texture()?;
-
-                RtRenderer::get_mut(&mut self.current_game.as_mut().unwrap().store)
-                    .as_mut()
-                    .unwrap()
-                    .set_swapchain_texture(Some(texture.texture.clone()));
-
-                RtMainLoop::redraw(&mut self.current_game.as_mut().unwrap().store)?;
-
-                RtRenderer::get_mut(&mut self.current_game.as_mut().unwrap().store)
-                    .as_mut()
-                    .unwrap()
-                    .set_swapchain_texture(None);
-
-                gfx_state.context.borrow_mut().submit(&gfx_state.queue);
-                texture.present();
+                // TODO
             }
             WindowEvent::CursorMoved { position, .. } => {
-                RtMainLoop::mouse_moved(
-                    &mut self.current_game.as_mut().unwrap().store,
-                    position.x,
-                    position.y,
-                )?;
+                // TODO
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -189,44 +135,10 @@ impl FallibleApplicationHandler for App {
                     },
                 ..
             } => {
-                let store = &mut self.current_game.as_mut().unwrap().store;
-
-                let physical_key = match *physical_key {
-                    PhysicalKey::Code(key_code) => key_code as u32,
-                    PhysicalKey::Unidentified(_) => u32::MAX,
-                };
-
-                let (logical_key_as_str, logical_key_as_str_len, logical_key_as_named) =
-                    match logical_key {
-                        winit::keyboard::Key::Named(named_key) => (0, 0, *named_key as u32),
-                        winit::keyboard::Key::Character(chr) => {
-                            let (base, len) = RtFfi::alloc_str(store, chr)?;
-                            (base, len, 0)
-                        }
-                        winit::keyboard::Key::Unidentified(_) => (0, 0, u32::MAX),
-                        // TODO: marshall
-                        winit::keyboard::Key::Dead(_) => (0, 0, u32::MAX),
-                    };
-
-                let (text, text_len) = RtFfi::alloc_opt_str(store, text.as_deref())?;
-
-                let location = *location as u32;
-
-                RtMainLoop::key_event(
-                    store,
-                    physical_key,
-                    logical_key_as_str,
-                    logical_key_as_str_len,
-                    logical_key_as_named,
-                    text,
-                    text_len,
-                    location,
-                    if state.is_pressed() { 1 } else { 0 },
-                    if *repeat { 1 } else { 0 },
-                )?;
+                // TODO
             }
             WindowEvent::CloseRequested => {
-                RtMainLoop::request_exit(&mut self.current_game.as_mut().unwrap().store)?;
+                // TODO
             }
             _ => {}
         }
@@ -235,26 +147,19 @@ impl FallibleApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        let Some(current_game) = &mut self.current_game else {
+        let Some(init) = &mut self.init else {
             return Ok(());
         };
 
-        if RtMainLoop::take_exit_confirmed(&mut current_game.store) {
-            event_loop.exit();
+        // TODO
 
-            return Ok(());
+        if let Some(timeout) = init.env_bindings.earliest_timeout(&self.world) {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(timeout));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
 
-        if RtMainLoop::take_redraw(&mut current_game.store)
-            && let Some(gfx_state) = &mut self.gfx_state
-            && !is_in_live_resize(&gfx_state.window)
-        {
-            gfx_state.window.request_redraw();
-        }
-
-        if let Some(deadline) = RtMainLoop::take_wakeup(&mut current_game.store) {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
-        }
+        self.world.flush();
 
         Ok(())
     }
@@ -264,22 +169,15 @@ pub fn run_app() -> anyhow::Result<()> {
     // Creating windowing services
     tracing::info!("Setting up windowing and graphics contexts.");
 
+    let mut world = World::new();
     let event_loop = EventLoop::new()?;
-    let gfx_instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
-        flags: wgpu::InstanceFlags::default(),
-        backend_options: wgpu::BackendOptions::default(),
-    });
+
+    let root = EntityHandle::new(&mut world);
+    root.with_label("root", &mut world);
 
     // Setup WASM runtime
     tracing::info!("Setting up WASM runtime.");
     let engine = wasmtime::Engine::new(&wasmtime::Config::default())?;
-
-    let mut linker = wasmtime::Linker::new(&engine);
-    RtLogger::define(&mut linker)?;
-    RtRenderer::define(&mut linker)?;
-    RtMainLoop::define(&mut linker)?;
-    RtTime::define(&mut linker)?;
 
     // Load module
     tracing::info!("Loading module.");
@@ -290,50 +188,19 @@ pub fn run_app() -> anyhow::Result<()> {
 
     let module = wasmtime::Module::new(&engine, module)?;
 
-    // Instantiate module
-    tracing::info!("Initializing guest.");
-
-    let mut store = wasmtime::Store::new(&engine, RtState::default());
-    let instance = linker.instantiate(&mut store, &module)?;
-
-    MainMemory::init(&mut store, instance)?;
-    RtLogger::init(
-        &mut store,
-        Arc::new(move |_state, msg| {
-            // TODO: log levels
-            tracing::info!("{msg}");
-        }),
-    )?;
-    RtMainLoop::init(&mut store, instance)?;
-    RtTime::init(&mut store, instance)?;
-    RtFfi::init(&mut store, instance)?;
-
-    instance
-        .get_typed_func::<(u32, u32), u32>(&mut store, "main")
-        .context("no main function in binary")?
-        .call(&mut store, (0, 0))?;
-
     // Start main loop
     tracing::info!("Starting main loop!");
 
-    let mut app = App {
-        engine,
-        linker,
-        current_game: Some(ActiveGameState {
+    run_app_fallible(
+        event_loop,
+        &mut App {
+            world,
+            root,
+            engine,
             module,
-            store,
-            instance,
-        }),
-        wgpu_instance: gfx_instance,
-        gfx_state: None,
-        error: None,
-    };
-
-    run_app_fallible(event_loop, &mut app)?;
-
-    if let Some(e) = app.error.take() {
-        return Err(e);
-    }
+            init: None,
+        },
+    )?;
 
     Ok(())
 }

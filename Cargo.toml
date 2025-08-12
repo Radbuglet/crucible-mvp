@@ -6,7 +6,6 @@ members = [
     "host/client",
     "host/renderer",
     "host/server",
-    "host/shared",
     "host/wasmlink-wasmtime",
     "shared/crucible-abi",
     "shared/wasmlink",
@@ -16,9 +15,16 @@ members = [
 crucible = { path = "guest/crucible" }
 crucible-abi = { path = "shared/crucible-abi" }
 crucible-renderer = { path = "host/renderer" }
-crucible-shared = { path = "host/shared" }
 wasmlink = { path = "shared/wasmlink" }
 wasmlink-wasmtime = { path = "host/wasmlink-wasmtime" }
+
+[workspace.dependencies.arid]
+git = "https://github.com/Radbuglet/arid.git"
+rev = "4197e5f770d156764cf75e49cfae907c7781d54d"
+
+[workspace.dependencies.arid-entity]
+git = "https://github.com/Radbuglet/arid.git"
+rev = "4197e5f770d156764cf75e49cfae907c7781d54d"
 
 [profile.dev.package."*"]
 opt-level = 2

@@ -9,7 +9,7 @@ use crevice::std430::AsStd430;
 use glam::{Affine2, U8Vec4, UVec2};
 
 use crate::{
-    Command, GfxContext, Instance, TEXTURE_FORMAT,
+    Command, Instance, Renderer, TEXTURE_FORMAT,
     utils::{
         align::align_to_pow_2,
         blit::{BlitOptions, blit},
@@ -119,7 +119,7 @@ impl TextureAssets {
 
 // === GfxContext === //
 
-impl GfxContext {
+impl Renderer {
     pub fn create_texture(&mut self, width: u32, height: u32) -> wgpu::Texture {
         self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("user texture"),

@@ -1,6 +1,6 @@
 use std::{fs::File, io::BufReader};
 
-use crucible_renderer::{GfxContext, TEXTURE_FORMAT, required_features};
+use crucible_renderer::{Renderer, TEXTURE_FORMAT, required_features};
 use futures::executor::block_on;
 use glam::{Affine2, U8Vec3, U8Vec4, UVec2, Vec2};
 use image::ImageFormat;
@@ -25,7 +25,7 @@ struct AppState {
     surface: wgpu::Surface<'static>,
     image_1: wgpu::Texture,
     image_2: wgpu::Texture,
-    gfx: GfxContext,
+    gfx: Renderer,
 }
 
 impl ApplicationHandler for App {
@@ -68,9 +68,9 @@ impl ApplicationHandler for App {
                     .unwrap()
             });
 
-            let mut gfx = GfxContext::new(device.clone());
+            let mut gfx = Renderer::new(device.clone());
 
-            fn create_image(gfx: &mut GfxContext, path: &str) -> wgpu::Texture {
+            fn create_image(gfx: &mut Renderer, path: &str) -> wgpu::Texture {
                 let image_cpu =
                     image::load(BufReader::new(File::open(path).unwrap()), ImageFormat::Png)
                         .unwrap()

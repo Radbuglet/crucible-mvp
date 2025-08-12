@@ -5,17 +5,22 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"
+arid.workspace = true
+arid-entity.workspace = true
 bytemuck = { version = "1.23.1", features = ["min_const_generics"] }
+crucible-abi.workspace = true
 crucible-renderer.workspace = true
-crucible-shared.workspace = true
 derive-where = "1.5.0"
 futures = "0.3.31"
 glam = "0.30.4"
 late-struct = "0.1.0"
 raw-window-handle = "0.6.2"
+rustc-hash = "2.1.1"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-wasmtime = "34.0.0"
+wasmlink.workspace = true
+wasmlink-wasmtime.workspace = true
+wasmtime = "35.0.0"
 wgpu = "25.0.2"
 winit = "0.30.11"
 

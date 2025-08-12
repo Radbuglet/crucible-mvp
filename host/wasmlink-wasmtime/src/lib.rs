@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, ptr::NonNull};
+use std::{fmt, marker::PhantomData, ptr::NonNull};
 
 use anyhow::Context;
 use arid::World;
@@ -7,12 +7,23 @@ use wasmlink::{
     HostMarshalError, HostboundViewOf, Marshal, Port, Strategy,
 };
 
+// === Aliases === //
+
+pub type WslStore = wasmtime::Store<WslStoreState>;
+pub type WslLinker = wasmtime::Linker<WslStoreState>;
+
 // === WslStoreState === //
 
 #[derive(Default)]
 pub struct WslStoreState {
     world: Option<NonNull<World>>,
     exports: Option<WslExports>,
+}
+
+impl fmt::Debug for WslStoreState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WslStoreState").finish_non_exhaustive()
+    }
 }
 
 struct WslExports {
@@ -24,10 +35,10 @@ struct WslExports {
 pub trait WslStoreExt {
     fn setup_exports(&mut self, instance: wasmtime::Instance) -> anyhow::Result<()>;
 
-    fn root<R>(&mut self, world: &mut World, f: impl FnOnce(WslContext<'_>) -> R) -> R;
+    fn run_root<R>(&mut self, world: &mut World, f: impl FnOnce(&mut WslContext<'_>) -> R) -> R;
 }
 
-impl WslStoreExt for wasmtime::Store<WslStoreState> {
+impl WslStoreExt for WslStore {
     fn setup_exports(&mut self, instance: wasmtime::Instance) -> anyhow::Result<()> {
         let exports = WslExports {
             memory: instance
@@ -46,7 +57,7 @@ impl WslStoreExt for wasmtime::Store<WslStoreState> {
         Ok(())
     }
 
-    fn root<R>(&mut self, world: &mut World, f: impl FnOnce(WslContext<'_>) -> R) -> R {
+    fn run_root<R>(&mut self, world: &mut World, f: impl FnOnce(&mut WslContext<'_>) -> R) -> R {
         assert!(self.data().world.is_none());
 
         self.data_mut().world = Some(NonNull::from(world));
@@ -55,7 +66,7 @@ impl WslStoreExt for wasmtime::Store<WslStoreState> {
             me.data_mut().world = None;
         });
 
-        f(WslContext(WslContextInner::Root(&mut me)))
+        f(&mut WslContext(WslContextInner::Root(&mut me)))
     }
 }
 
@@ -69,10 +80,6 @@ enum WslContextInner<'a> {
 }
 
 impl WslContext<'_> {
-    pub fn wr(&self) {}
-
-    pub fn w(&mut self) {}
-
     fn cx(&self) -> wasmtime::StoreContext<'_, WslStoreState> {
         match &self.0 {
             WslContextInner::Root(store) => store.into(),
@@ -85,6 +92,14 @@ impl WslContext<'_> {
             WslContextInner::Root(store) => store.into(),
             WslContextInner::Call(caller) => caller.into(),
         }
+    }
+
+    pub fn wr(&self) -> &World {
+        unsafe { self.cx().data().world.expect("no world bound").as_ref() }
+    }
+
+    pub fn w(&mut self) -> &mut World {
+        unsafe { self.cx().data().world.expect("no world bound").as_mut() }
     }
 
     fn exports(&self) -> &WslExports {
@@ -125,43 +140,56 @@ impl HostContext for WslContext<'_> {
 
 // === Function Definitions === //
 
-pub fn define<I, O, F>(
-    linker: &mut wasmtime::Linker<WslStoreState>,
-    port: Port<I, O>,
-    func: F,
-) -> anyhow::Result<()>
-where
-    I: Marshal,
-    O: Marshal,
-    F: 'static
-        + Send
-        + Sync
-        + for<'t> Fn(
-            WslContext<'_>,
-            HostboundViewOf<I>,
-            Returner<'t, O>,
-        ) -> anyhow::Result<RetVal<'t>>,
-{
-    linker.func_wrap(
-        port.module(),
-        port.func_name(),
-        move |cx: wasmtime::Caller<'_, WslStoreState>,
-              in_addr: u32,
-              out_addr: u32|
-              -> anyhow::Result<()> {
-            let cx = WslContext(WslContextInner::Call(cx));
-            let in_view = <I::Strategy>::decode_hostbound(&cx, FfiPtr::new(in_addr))?;
-            let returner = Returner {
-                _ty: PhantomData,
-                _invariant: PhantomData,
-                out_addr,
-            };
+pub trait WslLinkerExt {
+    fn define_wsl<I, O, F>(&mut self, port: Port<I, O>, func: F) -> anyhow::Result<()>
+    where
+        I: Marshal,
+        O: Marshal,
+        F: 'static
+            + Send
+            + Sync
+            + for<'t> Fn(
+                &mut WslContext<'_>,
+                HostboundViewOf<I>,
+                Returner<'t, O>,
+            ) -> anyhow::Result<RetVal<'t>>;
+}
 
-            func(cx, in_view, returner).map(|_| ())
-        },
-    )?;
+impl WslLinkerExt for WslLinker {
+    fn define_wsl<I, O, F>(&mut self, port: Port<I, O>, func: F) -> anyhow::Result<()>
+    where
+        I: Marshal,
+        O: Marshal,
+        F: 'static
+            + Send
+            + Sync
+            + for<'t> Fn(
+                &mut WslContext<'_>,
+                HostboundViewOf<I>,
+                Returner<'t, O>,
+            ) -> anyhow::Result<RetVal<'t>>,
+    {
+        self.func_wrap(
+            port.module(),
+            port.func_name(),
+            move |cx: wasmtime::Caller<'_, WslStoreState>,
+                  in_addr: u32,
+                  out_addr: u32|
+                  -> anyhow::Result<()> {
+                let mut cx = WslContext(WslContextInner::Call(cx));
+                let in_view = <I::Strategy>::decode_hostbound(&cx, FfiPtr::new(in_addr))?;
+                let returner = Returner {
+                    _ty: PhantomData,
+                    _invariant: PhantomData,
+                    out_addr,
+                };
 
-    Ok(())
+                func(&mut cx, in_view, returner).map(|_| ())
+            },
+        )?;
+
+        Ok(())
+    }
 }
 
 pub struct Returner<'t, O: Marshal> {
@@ -173,10 +201,10 @@ pub struct Returner<'t, O: Marshal> {
 impl<'t, O: Marshal> Returner<'t, O> {
     pub fn finish(
         self,
-        mut cx: WslContext<'_>,
+        cx: &mut WslContext<'_>,
         value: &GuestboundViewOf<'_, O>,
     ) -> anyhow::Result<RetVal<'t>> {
-        <O::Strategy>::encode_guestbound(&mut cx, FfiPtr::new(self.out_addr), value)?;
+        <O::Strategy>::encode_guestbound(cx, FfiPtr::new(self.out_addr), value)?;
 
         Ok(RetVal {
             _invariant: PhantomData,

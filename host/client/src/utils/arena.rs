@@ -3,12 +3,12 @@ use derive_where::derive_where;
 
 #[derive(Debug)]
 #[derive_where(Default)]
-pub struct Arena<T> {
+pub struct GuestArena<T> {
     slots: Vec<Option<T>>,
     free: Vec<u32>,
 }
 
-impl<T> Arena<T> {
+impl<T> GuestArena<T> {
     pub fn add(&mut self, value: T) -> anyhow::Result<u32> {
         if let Some(handle) = self.free.pop() {
             self.slots[Self::handle_to_idx(handle)?] = Some(value);
@@ -35,8 +35,9 @@ impl<T> Arena<T> {
             .map(|v| v as usize)
     }
 
-    pub fn remove(&mut self, handle: u32) -> anyhow::Result<()> {
-        self.slots
+    pub fn remove(&mut self, handle: u32) -> anyhow::Result<T> {
+        let value = self
+            .slots
             .get_mut(Self::handle_to_idx(handle)?)
             .context("handle is past arena length")?
             .take()
@@ -44,7 +45,7 @@ impl<T> Arena<T> {
 
         self.free.push(handle);
 
-        Ok(())
+        Ok(value)
     }
 
     pub fn get(&self, handle: u32) -> anyhow::Result<&T> {

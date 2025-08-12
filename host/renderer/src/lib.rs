@@ -17,7 +17,7 @@ pub fn required_features() -> wgpu::Features {
 pub const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 #[derive(Debug)]
-pub struct GfxContext {
+pub struct Renderer {
     device: wgpu::Device,
 
     /// Pipeline resources for drawing textures.
@@ -40,7 +40,7 @@ pub struct GfxContext {
     placeholder: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
-impl GfxContext {
+impl Renderer {
     pub fn new(device: wgpu::Device) -> Self {
         let texture_gfx = TextureAssets::new(&device);
 
