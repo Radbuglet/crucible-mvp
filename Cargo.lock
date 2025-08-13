@@ -739,6 +739,8 @@ dependencies = [
  "futures",
  "glam",
  "scopeguard",
+ "tracing",
+ "tracing-subscriber",
  "wasmlink",
 ]
 

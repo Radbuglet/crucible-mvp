@@ -80,14 +80,14 @@ enum WslContextInner<'a> {
 }
 
 impl WslContext<'_> {
-    fn cx(&self) -> wasmtime::StoreContext<'_, WslStoreState> {
+    pub fn cx(&self) -> wasmtime::StoreContext<'_, WslStoreState> {
         match &self.0 {
             WslContextInner::Root(store) => store.into(),
             WslContextInner::Call(caller) => caller.into(),
         }
     }
 
-    fn cx_mut(&mut self) -> wasmtime::StoreContextMut<'_, WslStoreState> {
+    pub fn cx_mut(&mut self) -> wasmtime::StoreContextMut<'_, WslStoreState> {
         match &mut self.0 {
             WslContextInner::Root(store) => store.into(),
             WslContextInner::Call(caller) => caller.into(),

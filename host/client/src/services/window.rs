@@ -75,6 +75,7 @@ pub async fn create_gfx_context(
 #[derive(Debug)]
 pub struct WindowManager {
     gfx: GfxContext,
+    renderer: Renderer,
     windows: FxHashMap<WindowId, WindowStateHandle>,
 }
 
@@ -82,8 +83,11 @@ component!(pub WindowManager);
 
 impl WindowManagerHandle {
     pub fn new(gfx: GfxContext, w: W) -> Strong<Self> {
+        let renderer = Renderer::new(gfx.device.clone());
+
         WindowManager {
             gfx,
+            renderer,
             windows: FxHashMap::default(),
         }
         .spawn(w)
@@ -93,13 +97,20 @@ impl WindowManagerHandle {
         &self.r(w).gfx
     }
 
+    pub fn renderer(self, w: Wr<'_>) -> &Renderer {
+        &self.r(w).renderer
+    }
+
+    pub fn renderer_mut(self, w: W<'_>) -> &mut Renderer {
+        &mut self.m(w).renderer
+    }
+
     pub fn create_window(self, window: Arc<Window>, surface: wgpu::Surface<'static>, w: W) {
         let window_id = window.id();
         let window_state = WindowState {
             manager: self,
             window,
             surface,
-            renderer: Renderer::new(self.r(w).gfx.device.clone()),
         }
         .spawn(w);
 
@@ -124,7 +135,6 @@ pub struct WindowState {
     manager: WindowManagerHandle,
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
-    renderer: Renderer,
 }
 
 component!(pub WindowState);
@@ -132,14 +142,6 @@ component!(pub WindowState);
 impl WindowStateHandle {
     pub fn window(self, w: Wr<'_>) -> &Arc<Window> {
         &self.r(w).window
-    }
-
-    pub fn renderer(self, w: W) -> &Renderer {
-        &self.m(w).renderer
-    }
-
-    pub fn renderer_mut(self, w: W) -> &mut Renderer {
-        &mut self.m(w).renderer
     }
 
     pub fn is_in_live_resize(self, w: Wr) -> bool {
@@ -172,7 +174,7 @@ impl WindowStateHandle {
 
         f(&texture, w)?;
 
-        self.m(w).renderer.submit(&gfx.queue);
+        self.r(w).manager.m(w).renderer.submit(&gfx.queue);
         texture.present();
 
         Ok(())

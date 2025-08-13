@@ -14,7 +14,7 @@ use winit::{
 use crate::{
     bindings::{env::EnvBindingsHandle, gfx::GfxBindingsHandle},
     services::window::{WindowManagerHandle, create_gfx_context},
-    utils::winit::{FallibleApplicationHandler, is_in_live_resize, run_app_fallible},
+    utils::winit::{FallibleApplicationHandler, run_app_fallible},
 };
 
 #[derive(Debug)]
@@ -65,7 +65,10 @@ impl FallibleApplicationHandler for App {
             let env_bindings = self.root.add(EnvBindingsHandle::new(w), w);
             env_bindings.install(&mut linker)?;
 
-            let gfx_bindings = self.root.add(GfxBindingsHandle::new(w), w);
+            let gfx_bindings = self
+                .root
+                .add(GfxBindingsHandle::new(window_mgr.as_weak(), w), w);
+
             gfx_bindings.install(&mut linker)?;
 
             linker.define_unknown_imports_as_traps(&self.module)?;
@@ -77,9 +80,13 @@ impl FallibleApplicationHandler for App {
 
             store.setup_wsl_exports(instance)?;
 
-            instance
-                .get_typed_func::<(u32, u32), u32>(&mut store, "main")?
-                .call(&mut store, (0, 0))?;
+            store.run_root(w, |cx| -> anyhow::Result<()> {
+                instance
+                    .get_typed_func::<(u32, u32), u32>(cx.cx_mut(), "main")?
+                    .call(cx.cx_mut(), (0, 0))?;
+
+                Ok(())
+            })?;
 
             // Mark as initialized
             window.set_visible(true);

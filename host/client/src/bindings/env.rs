@@ -70,7 +70,15 @@ impl EnvBindingsHandle {
         })?;
 
         linker.define_wsl(abi::LOG_MESSAGE, |cx, msg, out| {
-            tracing::info!("{}", msg.msg.read(cx)?);
+            tracing::info!(
+                target = "guest",
+                file = msg.file.read(cx)?,
+                line = msg.line,
+                column = msg.column,
+                "{}",
+                msg.msg.read(cx)?
+            );
+
             out.finish(cx, &())
         })?;
 

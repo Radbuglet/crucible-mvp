@@ -34,7 +34,7 @@ marshal_struct! {
         pub dst_handle: GpuTextureHandle,
         pub src_handle: Option<GpuTextureHandle>,
         pub transform: Affine2,
-        pub clip: Option<UVec2>,
+        pub clip: Option<URect2>,
         pub tint: Bgra8Color,
     }
 }
