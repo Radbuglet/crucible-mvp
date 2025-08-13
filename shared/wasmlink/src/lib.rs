@@ -32,7 +32,7 @@ pub const fn align_of_u32<T>() -> u32 {
 
 pub const fn size_of_u32<T>() -> u32 {
     const {
-        let align = mem::align_of::<T>() as u64;
+        let align = mem::size_of::<T>() as u64;
 
         if align > u32::MAX as u64 {
             panic!("size is too large for guest")
@@ -328,7 +328,7 @@ pub mod ffi_offset_internals {
 macro_rules! ffi_offset {
     ($ty:ty, $($path:tt)*) => {
         const {
-            $crate::ffi_offset_internals::make_ffi_offset(
+            $crate::ffi_offset_internals::make_ffi_offset::<$ty, _>(
                 $crate::ffi_offset_internals::offset_of!($ty, $($path)*),
                 |me| &me.$($path)*
             )
@@ -678,7 +678,7 @@ impl<T: Strategy> Strategy for Option<T> {
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> anyhow::Result<Self::HostboundView> {
         let is_present = *ptr
-            .field(ffi_offset!(FfiOption<T>, present))
+            .field(ffi_offset!(FfiOption<T::Hostbound<'static>>, present))
             .cast::<u8>()
             .read(cx)?;
 
@@ -686,7 +686,11 @@ impl<T: Strategy> Strategy for Option<T> {
             return Ok(None);
         }
 
-        let value = T::decode_hostbound(cx, ptr.field(ffi_offset!(FfiOption<T>, value)).cast())?;
+        let value = T::decode_hostbound(
+            cx,
+            ptr.field(ffi_offset!(FfiOption<T::Hostbound<'static>>, value))
+                .cast(),
+        )?;
 
         Ok(Some(value))
     }
@@ -697,14 +701,16 @@ impl<T: Strategy> Strategy for Option<T> {
         value: &Self::GuestboundView<'_>,
     ) -> anyhow::Result<()> {
         *out_ptr
-            .field(ffi_offset!(FfiOption<T>, present))
+            .field(ffi_offset!(FfiOption<T::Guestbound>, present))
             .cast::<u8>()
             .write(cx)? = value.is_some() as u8;
 
         if let Some(value) = value {
             T::encode_guestbound(
                 cx,
-                out_ptr.field(ffi_offset!(FfiOption<T>, value)).cast(),
+                out_ptr
+                    .field(ffi_offset!(FfiOption<T::Guestbound>, value))
+                    .cast(),
                 value,
             )?;
         }
@@ -1154,7 +1160,7 @@ macro_rules! marshal_struct {
                     $field_name: <<$field_ty as $crate::marshal_struct_internals::Marshal>::Strategy>::decode_hostbound(
                         cx,
                         ptr.field($crate::marshal_struct_internals::ffi_offset!(
-                            Self::HostboundView, $field_name,
+                            Self::Hostbound<'static>, $field_name,
                         )),
                     )?,
                 )*})
