@@ -105,7 +105,12 @@ impl WindowManagerHandle {
         &mut self.m(w).renderer
     }
 
-    pub fn create_window(self, window: Arc<Window>, surface: wgpu::Surface<'static>, w: W) {
+    pub fn create_window(
+        self,
+        window: Arc<Window>,
+        surface: wgpu::Surface<'static>,
+        w: W,
+    ) -> WindowStateHandle {
         let window_id = window.id();
         let window_state = WindowState {
             manager: self,
@@ -121,6 +126,8 @@ impl WindowManagerHandle {
         self.entity(w).with_child(window_entity, w);
 
         self.m(w).windows.insert(window_id, window_state.as_weak());
+
+        window_state.as_weak()
     }
 
     pub fn lookup(self, id: WindowId, w: Wr) -> WindowStateHandle {

@@ -41,6 +41,10 @@ impl GfxBindingsHandle {
         self.r(w).callbacks
     }
 
+    pub fn create_texture(self, texture: wgpu::Texture, w: W) -> anyhow::Result<u32> {
+        self.m(w).handles.add(texture)
+    }
+
     #[must_use]
     pub fn take_redraw_request(self, w: W) -> bool {
         mem::take(&mut self.m(w).redraw_requested)

@@ -14,7 +14,7 @@ use winit::{
 
 use crate::{
     bindings::{env::EnvBindingsHandle, gfx::GfxBindingsHandle},
-    services::window::{WindowManagerHandle, create_gfx_context},
+    services::window::{WindowManagerHandle, WindowStateHandle, create_gfx_context},
     utils::winit::{FallibleApplicationHandler, run_app_fallible},
 };
 
@@ -32,9 +32,9 @@ struct AppInitState {
     window_mgr: WindowManagerHandle,
     env_bindings: EnvBindingsHandle,
     gfx_bindings: GfxBindingsHandle,
-    main_window: WindowId,
+    main_window: WindowStateHandle,
     store: WslStore,
-    instance: wasmtime::Instance,
+    _instance: wasmtime::Instance,
 }
 
 impl FallibleApplicationHandler for App {
@@ -59,7 +59,7 @@ impl FallibleApplicationHandler for App {
             let window_mgr = WindowManagerHandle::new(gfx, w);
             self.root.add(window_mgr.clone(), w);
 
-            window_mgr.create_window(window.clone(), surface, w);
+            let main_window = window_mgr.create_window(window.clone(), surface, w);
 
             // Setup WASM linker
             let mut linker = WslLinker::new(&self.engine);
@@ -97,9 +97,9 @@ impl FallibleApplicationHandler for App {
                 window_mgr: window_mgr.as_weak(),
                 env_bindings,
                 gfx_bindings,
-                main_window: window.id(),
+                main_window,
                 store,
-                instance,
+                _instance: instance,
             });
 
             Ok(())
@@ -125,7 +125,7 @@ impl FallibleApplicationHandler for App {
 
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         window_id: WindowId,
         event: WindowEvent,
     ) -> anyhow::Result<()> {
@@ -141,10 +141,29 @@ impl FallibleApplicationHandler for App {
                     return Ok(());
                 };
 
-                init.store.run_wsl_root(w, |cx| -> anyhow::Result<()> {
-                    // TODO
-                    Ok(())
-                })?;
+                let window = init.window_mgr.lookup(window_id, w);
+
+                window.redraw(
+                    |fb, w| -> anyhow::Result<()> {
+                        let handle = init.gfx_bindings.create_texture(fb.texture.clone(), w)?;
+
+                        init.store.run_wsl_root(w, |cx| {
+                            cbs.redraw_requested.call(
+                                cx,
+                                &crucible_abi::RedrawRequestedArgs {
+                                    fb: crucible_abi::GpuTextureHandle { raw: handle },
+                                    size: crucible_abi::UVec2 {
+                                        x: fb.texture.width(),
+                                        y: fb.texture.height(),
+                                    },
+                                },
+                            )
+                        })?;
+
+                        Ok(())
+                    },
+                    w,
+                )?;
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let Some(cbs) = init.gfx_bindings.callbacks(w) else {
@@ -184,7 +203,7 @@ impl FallibleApplicationHandler for App {
                         &crucible_abi::KeyEvent {
                             physical_key: match physical_key {
                                 keyboard::PhysicalKey::Code(code) => Some(*code as u32),
-                                keyboard::PhysicalKey::Unidentified(native_key_code) => None,
+                                keyboard::PhysicalKey::Unidentified(_) => None,
                             },
                             logical_key: match logical_key {
                                 keyboard::Key::Named(named_key) => crucible_abi::LogicalKey {
@@ -195,12 +214,10 @@ impl FallibleApplicationHandler for App {
                                     named: None,
                                     character: Some(ch),
                                 },
-                                keyboard::Key::Unidentified(native_key) => {
-                                    crucible_abi::LogicalKey {
-                                        named: None,
-                                        character: None,
-                                    }
-                                }
+                                keyboard::Key::Unidentified(_) => crucible_abi::LogicalKey {
+                                    named: None,
+                                    character: None,
+                                },
                                 keyboard::Key::Dead(_) => crucible_abi::LogicalKey {
                                     named: None,
                                     character: None,
@@ -230,11 +247,8 @@ impl FallibleApplicationHandler for App {
             return Ok(());
         };
 
-        if init.gfx_bindings.take_redraw_request(w) {
-            init.window_mgr
-                .lookup(init.main_window, w)
-                .window(w)
-                .request_redraw();
+        if init.gfx_bindings.take_redraw_request(w) && !init.main_window.is_in_live_resize(w) {
+            init.main_window.window(w).request_redraw();
         }
 
         if let Some(timeout) = init.env_bindings.earliest_timeout(&self.world) {
