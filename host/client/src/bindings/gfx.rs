@@ -1,3 +1,5 @@
+use std::mem;
+
 use arid::{Handle, Object, Strong, W, Wr};
 use arid_entity::component;
 use crucible_abi as abi;
@@ -12,6 +14,7 @@ pub struct GfxBindings {
     window_mgr: WindowManagerHandle,
     handles: GuestArena<wgpu::Texture>,
     callbacks: Option<WindowCallbacks>,
+    redraw_requested: bool,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -29,12 +32,18 @@ impl GfxBindingsHandle {
             window_mgr,
             handles: GuestArena::default(),
             callbacks: None,
+            redraw_requested: false,
         }
         .spawn(w)
     }
 
     pub fn callbacks(self, w: Wr) -> Option<WindowCallbacks> {
         self.r(w).callbacks
+    }
+
+    #[must_use]
+    pub fn take_redraw_request(self, w: W) -> bool {
+        mem::take(&mut self.m(w).redraw_requested)
     }
 
     pub fn install(self, linker: &mut WslLinker) -> anyhow::Result<()> {
@@ -54,6 +63,12 @@ impl GfxBindingsHandle {
             let w = cx.w();
 
             self.m(w).callbacks = None;
+
+            ret.finish(cx, &())
+        })?;
+
+        linker.define_wsl(abi::WINDOW_REQUEST_REDRAW, move |cx, (), ret| {
+            self.m(cx.w()).redraw_requested = true;
 
             ret.finish(cx, &())
         })?;

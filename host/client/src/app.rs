@@ -8,6 +8,7 @@ use wasmlink_wasmtime::{WslLinker, WslStore, WslStoreExt, WslStoreState};
 use winit::{
     event::{KeyEvent, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard,
     window::{WindowAttributes, WindowId},
 };
 
@@ -31,6 +32,7 @@ struct AppInitState {
     window_mgr: WindowManagerHandle,
     env_bindings: EnvBindingsHandle,
     gfx_bindings: GfxBindingsHandle,
+    main_window: WindowId,
     store: WslStore,
     instance: wasmtime::Instance,
 }
@@ -80,7 +82,7 @@ impl FallibleApplicationHandler for App {
 
             store.setup_wsl_exports(instance)?;
 
-            store.run_root(w, |cx| -> anyhow::Result<()> {
+            store.run_wsl_root(w, |cx| -> anyhow::Result<()> {
                 instance
                     .get_typed_func::<(u32, u32), u32>(cx.cx_mut(), "main")?
                     .call(cx.cx_mut(), (0, 0))?;
@@ -95,6 +97,7 @@ impl FallibleApplicationHandler for App {
                 window_mgr: window_mgr.as_weak(),
                 env_bindings,
                 gfx_bindings,
+                main_window: window.id(),
                 store,
                 instance,
             });
@@ -114,7 +117,7 @@ impl FallibleApplicationHandler for App {
 
         if matches!(cause, StartCause::ResumeTimeReached { .. }) {
             init.store
-                .run_root(&mut self.world, |cx| init.env_bindings.poll_timeouts(cx))?;
+                .run_wsl_root(&mut self.world, |cx| init.env_bindings.poll_timeouts(cx))?;
         }
 
         Ok(())
@@ -126,16 +129,37 @@ impl FallibleApplicationHandler for App {
         window_id: WindowId,
         event: WindowEvent,
     ) -> anyhow::Result<()> {
+        let w = &mut self.world;
+
         let Some(init) = &mut self.init else {
             return Ok(());
         };
 
         match &event {
             WindowEvent::RedrawRequested => {
-                // TODO
+                let Some(cbs) = init.gfx_bindings.callbacks(w) else {
+                    return Ok(());
+                };
+
+                init.store.run_wsl_root(w, |cx| -> anyhow::Result<()> {
+                    // TODO
+                    Ok(())
+                })?;
             }
             WindowEvent::CursorMoved { position, .. } => {
-                // TODO
+                let Some(cbs) = init.gfx_bindings.callbacks(w) else {
+                    return Ok(());
+                };
+
+                init.store.run_wsl_root(w, |cx| {
+                    cbs.mouse_moved.call(
+                        cx,
+                        &crucible_abi::DVec2 {
+                            x: position.x,
+                            y: position.y,
+                        },
+                    )
+                })?;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -150,7 +174,45 @@ impl FallibleApplicationHandler for App {
                     },
                 ..
             } => {
-                // TODO
+                let Some(cbs) = init.gfx_bindings.callbacks(w) else {
+                    return Ok(());
+                };
+
+                init.store.run_wsl_root(w, |cx| {
+                    cbs.key_event.call(
+                        cx,
+                        &crucible_abi::KeyEvent {
+                            physical_key: match physical_key {
+                                keyboard::PhysicalKey::Code(code) => Some(*code as u32),
+                                keyboard::PhysicalKey::Unidentified(native_key_code) => None,
+                            },
+                            logical_key: match logical_key {
+                                keyboard::Key::Named(named_key) => crucible_abi::LogicalKey {
+                                    named: Some(*named_key as u32),
+                                    character: None,
+                                },
+                                keyboard::Key::Character(ch) => crucible_abi::LogicalKey {
+                                    named: None,
+                                    character: Some(ch),
+                                },
+                                keyboard::Key::Unidentified(native_key) => {
+                                    crucible_abi::LogicalKey {
+                                        named: None,
+                                        character: None,
+                                    }
+                                }
+                                keyboard::Key::Dead(_) => crucible_abi::LogicalKey {
+                                    named: None,
+                                    character: None,
+                                },
+                            },
+                            text: text.as_deref(),
+                            location: *location as u32,
+                            pressed: state.is_pressed(),
+                            repeat: *repeat,
+                        },
+                    )
+                })?;
             }
             WindowEvent::CloseRequested => {
                 // TODO
@@ -162,11 +224,18 @@ impl FallibleApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
+        let w = &mut self.world;
+
         let Some(init) = &mut self.init else {
             return Ok(());
         };
 
-        // TODO
+        if init.gfx_bindings.take_redraw_request(w) {
+            init.window_mgr
+                .lookup(init.main_window, w)
+                .window(w)
+                .request_redraw();
+        }
 
         if let Some(timeout) = init.env_bindings.earliest_timeout(&self.world) {
             event_loop.set_control_flow(ControlFlow::WaitUntil(timeout));

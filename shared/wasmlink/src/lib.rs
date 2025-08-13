@@ -1,7 +1,6 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::{
-    error::Error,
     fmt,
     marker::PhantomData,
     mem::{self, MaybeUninit},
@@ -9,6 +8,7 @@ use std::{
     ptr, slice,
 };
 
+use anyhow::Context;
 use bytemuck::{Pod, TransparentWrapper, Zeroable};
 use derive_where::derive_where;
 
@@ -176,12 +176,12 @@ impl<T> FfiPtr<T> {
 }
 
 impl<T: Pod> FfiPtr<T> {
-    pub fn read(self, cx: &impl HostContext) -> Result<&T, HostMarshalError> {
+    pub fn read(self, cx: &impl HostContext) -> anyhow::Result<&T> {
         let [value] = cx.read_array(self.addr())?;
         Ok(value)
     }
 
-    pub fn write(self, cx: &mut impl HostContext) -> Result<&mut T, HostMarshalError> {
+    pub fn write(self, cx: &mut impl HostContext) -> anyhow::Result<&mut T> {
         let [value] = cx.write_array(self.addr())?;
         Ok(value)
     }
@@ -264,11 +264,11 @@ impl<T> FfiSliceIndexable for FfiSlice<T> {
 }
 
 impl<T: Pod> FfiSlice<T> {
-    pub fn read(self, cx: &impl HostContext) -> Result<&[T], HostMarshalError> {
+    pub fn read(self, cx: &impl HostContext) -> anyhow::Result<&[T]> {
         cx.read_slice(self.base().addr(), self.len())
     }
 
-    pub fn write(self, cx: &mut impl HostContext) -> Result<&mut [T], HostMarshalError> {
+    pub fn write(self, cx: &mut impl HostContext) -> anyhow::Result<&mut [T]> {
         cx.write_slice(self.base().addr(), self.len())
     }
 }
@@ -344,29 +344,16 @@ pub type HostboundOf<'a, M> = <StrategyOf<M> as Strategy>::Hostbound<'a>;
 pub type HostboundViewOf<M> = <StrategyOf<M> as Strategy>::HostboundView;
 pub type GuestboundViewOf<'a, M> = <StrategyOf<M> as Strategy>::GuestboundView<'a>;
 
-#[derive(Debug, Clone)]
-pub struct HostMarshalError(pub &'static str);
-
-impl fmt::Display for HostMarshalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("failed to marshal value on host: ")?;
-        f.write_str(self.0)?;
-        Ok(())
-    }
-}
-
-impl Error for HostMarshalError {}
-
 pub trait HostContext: Sized {
     fn guest_memory(&self) -> &[u8];
 
     fn guest_memory_mut(&mut self) -> &mut [u8];
 
-    fn alloc(&mut self, align: u32, size: u32) -> Result<FfiPtr<()>, HostMarshalError>;
+    fn alloc(&mut self, align: u32, size: u32) -> anyhow::Result<FfiPtr<()>>;
 
-    fn invoke(&mut self, id: u64, boxed_arg: u32) -> Result<(), HostMarshalError>;
+    fn invoke(&mut self, id: u64, boxed_arg: u32) -> anyhow::Result<()>;
 
-    fn read_slice<T: Pod>(&self, base: u32, len: u32) -> Result<&[T], HostMarshalError> {
+    fn read_slice<T: Pod>(&self, base: u32, len: u32) -> anyhow::Result<&[T]> {
         if mem::size_of::<T>() == 0 {
             return Ok(unsafe { slice::from_raw_parts(ptr::dangling::<T>(), len as usize) });
         }
@@ -374,21 +361,22 @@ pub trait HostContext: Sized {
         let bytes = self
             .guest_memory()
             .get(base as usize..)
-            .ok_or(HostMarshalError("memory base address too large"))?
+            .context("memory base address too large")?
             .get(
                 ..mem::size_of::<T>()
                     .checked_mul(len as usize)
-                    .ok_or(HostMarshalError("arithmetic overflow during addressing"))?,
+                    .context("arithmetic overflow during addressing")?,
             )
-            .ok_or(HostMarshalError("read past bounds of memory"))?;
+            .context("read past bounds of memory")?;
 
         let bytes = bytemuck::try_cast_slice::<u8, T>(bytes)
-            .map_err(|_| HostMarshalError("failed to convert byte view to POD slice"))?;
+            .ok()
+            .context("failed to convert byte view to POD slice")?;
 
         Ok(bytes)
     }
 
-    fn write_slice<T: Pod>(&mut self, base: u32, len: u32) -> Result<&mut [T], HostMarshalError> {
+    fn write_slice<T: Pod>(&mut self, base: u32, len: u32) -> anyhow::Result<&mut [T]> {
         if mem::size_of::<T>() == 0 {
             return Ok(unsafe {
                 slice::from_raw_parts_mut(ptr::dangling_mut::<T>(), len as usize)
@@ -398,29 +386,27 @@ pub trait HostContext: Sized {
         let bytes = self
             .guest_memory_mut()
             .get_mut(base as usize..)
-            .ok_or(HostMarshalError("memory base address too large"))?
+            .context("memory base address too large")?
             .get_mut(
                 ..mem::size_of::<T>()
                     .checked_mul(len as usize)
-                    .ok_or(HostMarshalError("arithmetic overflow during addressing"))?,
+                    .context("arithmetic overflow during addressing")?,
             )
-            .ok_or(HostMarshalError("read past bounds of memory"))?;
+            .context("read past bounds of memory")?;
 
         let bytes = bytemuck::try_cast_slice_mut::<u8, T>(bytes)
-            .map_err(|_| HostMarshalError("failed to convert byte view to POD slice"))?;
+            .ok()
+            .context("failed to convert byte view to POD slice")?;
 
         Ok(bytes)
     }
 
-    fn read_array<T: Pod, const N: usize>(&self, addr: u32) -> Result<&[T; N], HostMarshalError> {
+    fn read_array<T: Pod, const N: usize>(&self, addr: u32) -> anyhow::Result<&[T; N]> {
         self.read_slice(addr, N as u32)
             .map(|v| &bytemuck::cast_slice::<T, [T; N]>(v)[0])
     }
 
-    fn write_array<T: Pod, const N: usize>(
-        &mut self,
-        addr: u32,
-    ) -> Result<&mut [T; N], HostMarshalError> {
+    fn write_array<T: Pod, const N: usize>(&mut self, addr: u32) -> anyhow::Result<&mut [T; N]> {
         self.write_slice(addr, N as u32)
             .map(|v| &mut bytemuck::cast_slice_mut::<T, [T; N]>(v)[0])
     }
@@ -448,13 +434,13 @@ pub trait Strategy: Sized + 'static + Marshal<Strategy = Self> {
     fn decode_hostbound(
         cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
-    ) -> Result<Self::HostboundView, HostMarshalError>;
+    ) -> anyhow::Result<Self::HostboundView>;
 
     fn encode_guestbound(
         cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
-    ) -> Result<(), HostMarshalError>;
+    ) -> anyhow::Result<()>;
 }
 
 pub trait UnifiedStrategy:
@@ -499,7 +485,7 @@ impl<T: Pod> Strategy for PodMarshal<T> {
     fn decode_hostbound(
         cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
-    ) -> Result<Self::HostboundView, HostMarshalError> {
+    ) -> anyhow::Result<Self::HostboundView> {
         ptr.read(cx).copied()
     }
 
@@ -507,7 +493,7 @@ impl<T: Pod> Strategy for PodMarshal<T> {
         cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
-    ) -> Result<(), HostMarshalError> {
+    ) -> anyhow::Result<()> {
         *out_ptr.write(cx)? = *value;
 
         Ok(())
@@ -547,8 +533,7 @@ alias_pod_marshal! {
 pub unsafe trait ConvertMarshal: Sized + 'static {
     type Raw: UnifiedStrategy;
 
-    fn try_from_raw(raw: <Self::Raw as UnifiedStrategy>::Unified)
-    -> Result<Self, HostMarshalError>;
+    fn try_from_raw(raw: <Self::Raw as UnifiedStrategy>::Unified) -> anyhow::Result<Self>;
 }
 
 pub struct ConvertMarshalStrategy<T: ConvertMarshal> {
@@ -568,7 +553,7 @@ impl<T: ConvertMarshal> Strategy for ConvertMarshalStrategy<T> {
     fn decode_hostbound(
         cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
-    ) -> Result<Self::HostboundView, HostMarshalError> {
+    ) -> anyhow::Result<Self::HostboundView> {
         T::try_from_raw(T::Raw::decode_hostbound(
             cx,
             ptr.cast::<<T::Raw as UnifiedStrategy>::Unified>(),
@@ -579,7 +564,7 @@ impl<T: ConvertMarshal> Strategy for ConvertMarshalStrategy<T> {
         cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
-    ) -> Result<(), HostMarshalError> {
+    ) -> anyhow::Result<()> {
         T::Raw::encode_guestbound(
             cx,
             out_ptr.cast::<<T::Raw as UnifiedStrategy>::Unified>(),
@@ -597,13 +582,11 @@ impl Marshal for bool {
 unsafe impl ConvertMarshal for bool {
     type Raw = StrategyOf<u8>;
 
-    fn try_from_raw(
-        raw: <Self::Raw as UnifiedStrategy>::Unified,
-    ) -> Result<Self, HostMarshalError> {
+    fn try_from_raw(raw: <Self::Raw as UnifiedStrategy>::Unified) -> anyhow::Result<Self> {
         match raw {
             0 => Ok(false),
             1 => Ok(true),
-            _ => Err(HostMarshalError("boolean was neither `0` nor `1`")),
+            _ => anyhow::bail!("boolean was neither `0` nor `1`"),
         }
     }
 }
@@ -615,10 +598,8 @@ impl Marshal for char {
 unsafe impl ConvertMarshal for char {
     type Raw = StrategyOf<u32>;
 
-    fn try_from_raw(
-        raw: <Self::Raw as UnifiedStrategy>::Unified,
-    ) -> Result<Self, HostMarshalError> {
-        char::try_from(raw).map_err(|_| HostMarshalError("invalid unicode codepoint"))
+    fn try_from_raw(raw: <Self::Raw as UnifiedStrategy>::Unified) -> anyhow::Result<Self> {
+        char::try_from(raw).context("invalid unicode codepoint")
     }
 }
 
@@ -695,7 +676,7 @@ impl<T: Strategy> Strategy for Option<T> {
     fn decode_hostbound(
         cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
-    ) -> Result<Self::HostboundView, HostMarshalError> {
+    ) -> anyhow::Result<Self::HostboundView> {
         let is_present = *ptr
             .field(ffi_offset!(FfiOption<T>, present))
             .cast::<u8>()
@@ -714,7 +695,7 @@ impl<T: Strategy> Strategy for Option<T> {
         cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
-    ) -> Result<(), HostMarshalError> {
+    ) -> anyhow::Result<()> {
         *out_ptr
             .field(ffi_offset!(FfiOption<T>, present))
             .cast::<u8>()
@@ -752,7 +733,7 @@ impl<T: Strategy> HostPtr_<T> {
         self.ptr
     }
 
-    pub fn decode(self, cx: &impl HostContext) -> Result<T::HostboundView, HostMarshalError> {
+    pub fn decode(self, cx: &impl HostContext) -> anyhow::Result<T::HostboundView> {
         T::decode_hostbound(cx, self.ptr)
     }
 }
@@ -771,7 +752,7 @@ impl<T: Strategy> Strategy for Box<T> {
     fn decode_hostbound(
         cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
-    ) -> Result<Self::HostboundView, HostMarshalError> {
+    ) -> anyhow::Result<Self::HostboundView> {
         Ok(HostPtr_ {
             ptr: *ptr.cast::<FfiPtr<T::Hostbound<'static>>>().read(cx)?,
         })
@@ -781,7 +762,7 @@ impl<T: Strategy> Strategy for Box<T> {
         cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
-    ) -> Result<(), HostMarshalError> {
+    ) -> anyhow::Result<()> {
         let allocated = cx
             .alloc(
                 align_of_u32::<T::Guestbound>(),
@@ -924,7 +905,7 @@ impl<T: Strategy> Strategy for Vec<T> {
     fn decode_hostbound(
         cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
-    ) -> Result<Self::HostboundView, HostMarshalError> {
+    ) -> anyhow::Result<Self::HostboundView> {
         Ok(HostSlice_::new(
             *ptr.cast::<FfiSlice<T::Hostbound<'static>>>().read(cx)?,
         ))
@@ -934,7 +915,7 @@ impl<T: Strategy> Strategy for Vec<T> {
         cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
-    ) -> Result<(), HostMarshalError> {
+    ) -> anyhow::Result<()> {
         let allocated = cx.alloc(
             align_of_u32::<T::Guestbound>(),
             size_of_u32::<T::Guestbound>()
@@ -1033,9 +1014,8 @@ impl HostStr {
         self.slice.len()
     }
 
-    pub fn read(self, cx: &impl HostContext) -> Result<&str, HostMarshalError> {
-        std::str::from_utf8(self.slice.read(cx)?)
-            .map_err(|_| HostMarshalError("invalid UTF-8 sequence"))
+    pub fn read(self, cx: &impl HostContext) -> anyhow::Result<&str> {
+        std::str::from_utf8(self.slice.read(cx)?).context("invalid UTF-8 sequence")
     }
 }
 
@@ -1053,7 +1033,7 @@ impl Strategy for String {
     fn decode_hostbound(
         cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
-    ) -> Result<Self::HostboundView, HostMarshalError> {
+    ) -> anyhow::Result<Self::HostboundView> {
         Ok(HostStr::new(*ptr.cast::<FfiSlice<u8>>().read(cx)?))
     }
 
@@ -1061,7 +1041,7 @@ impl Strategy for String {
         cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
-    ) -> Result<(), HostMarshalError> {
+    ) -> anyhow::Result<()> {
         let allocated = cx.alloc(1, u32::try_from(value.len()).expect("string too long"))?;
 
         let allocated = FfiSlice::<u8>::new(allocated.cast(), value.len() as u32);
@@ -1126,11 +1106,10 @@ impl<'a> VariantSelector for GuestboundViewVariant<'a> {
 pub mod marshal_struct_internals {
     pub use {
         super::{
-            FfiPtr, GuestboundVariant, GuestboundViewVariant, HostContext, HostMarshalError,
-            HostboundVariant, HostboundViewVariant, MarkerVariant, Marshal, Strategy,
-            VariantSelector, ffi_offset,
+            FfiPtr, GuestboundVariant, GuestboundViewVariant, HostContext, HostboundVariant,
+            HostboundViewVariant, MarkerVariant, Marshal, Strategy, VariantSelector, ffi_offset,
         },
-        std::result::Result,
+        anyhow::Result,
     };
 }
 
@@ -1170,10 +1149,7 @@ macro_rules! marshal_struct {
             fn decode_hostbound(
                 cx: &impl $crate::marshal_struct_internals::HostContext,
                 ptr: $crate::marshal_struct_internals::FfiPtr<Self::Hostbound<'static>>,
-            ) -> $crate::marshal_struct_internals::Result<
-                Self::HostboundView,
-                $crate::marshal_struct_internals::HostMarshalError,
-            > {
+            ) -> $crate::marshal_struct_internals::Result<Self::HostboundView> {
                 Ok(Self::HostboundView {$(
                     $field_name: <<$field_ty as $crate::marshal_struct_internals::Marshal>::Strategy>::decode_hostbound(
                         cx,
@@ -1188,10 +1164,7 @@ macro_rules! marshal_struct {
                 cx: &mut impl $crate::marshal_struct_internals::HostContext,
                 out_ptr: $crate::marshal_struct_internals::FfiPtr<Self::Guestbound>,
                 value: &Self::GuestboundView<'_>,
-            ) -> $crate::marshal_struct_internals::Result<
-                (),
-                $crate::marshal_struct_internals::HostMarshalError,
-            > {
+            ) -> $crate::marshal_struct_internals::Result<()> {
                 $(
                     <<$field_ty as $crate::marshal_struct_internals::Marshal>::Strategy>::encode_guestbound(
                         cx,
@@ -1213,14 +1186,14 @@ macro_rules! marshal_struct {
 // Macro
 pub mod marshal_enum_internals {
     pub use {
-        super::{FfiPtr, HostContext, HostMarshalError, Marshal, Strategy},
+        super::{FfiPtr, HostContext, Marshal, Strategy},
+        anyhow::{Result, bail},
         std::{
             clone::Clone,
             cmp::{Eq, Ord, PartialEq, PartialOrd},
             fmt::Debug,
             hash::Hash,
             marker::Copy,
-            result::Result,
         },
     };
 
@@ -1272,17 +1245,14 @@ macro_rules! marshal_enum {
             fn decode_hostbound(
                 cx: &impl $crate::marshal_enum_internals::HostContext,
                 ptr: $crate::marshal_enum_internals::FfiPtr<Self>,
-            ) -> $crate::marshal_enum_internals::Result<
-                Self,
-                $crate::marshal_enum_internals::HostMarshalError,
-            > {
+            ) -> $crate::marshal_enum_internals::Result<Self> {
                 $(
                     const $variant_name: $crate::marshal_enum_internals::primitives::$repr
                         = $item_name::$variant_name as $crate::marshal_enum_internals::primitives::$repr;
                 )*
                 match *ptr.cast::<$crate::marshal_enum_internals::primitives::$repr>().read(cx)? {
                     $($variant_name => Ok(Self::$variant_name),)*
-                    _ => Err($crate::marshal_enum_internals::HostMarshalError("unknown enum variant")),
+                    _ => $crate::marshal_enum_internals::bail!("unknown enum variant"),
                 }
             }
 
@@ -1290,10 +1260,7 @@ macro_rules! marshal_enum {
                 cx: &mut impl $crate::marshal_enum_internals::HostContext,
                 out_ptr: $crate::marshal_enum_internals::FfiPtr<Self>,
                 value: &Self,
-            ) -> $crate::marshal_enum_internals::Result<
-                (),
-                $crate::marshal_enum_internals::HostMarshalError,
-            > {
+            ) -> $crate::marshal_enum_internals::Result<()> {
                 *out_ptr.cast::<$crate::marshal_enum_internals::primitives::$repr>().write(cx)?
                     = *value as $crate::marshal_enum_internals::primitives::$repr;
 
@@ -1330,7 +1297,7 @@ impl<I: Strategy> HostClosure_<I> {
         self,
         cx: &mut impl HostContext,
         arg: &GuestboundViewOf<'_, I>,
-    ) -> Result<(), HostMarshalError> {
+    ) -> anyhow::Result<()> {
         let arg_out = cx.alloc(
             align_of_u32::<GuestboundOf<I>>(),
             size_of_u32::<GuestboundOf<I>>(),
@@ -1513,7 +1480,7 @@ impl<I: Strategy> Strategy for fn(I) {
     fn decode_hostbound(
         cx: &impl HostContext,
         ptr: FfiPtr<Self::Hostbound<'static>>,
-    ) -> Result<Self::HostboundView, HostMarshalError> {
+    ) -> anyhow::Result<Self::HostboundView> {
         Ok(HostClosure_::new(*ptr.cast::<u64>().read(cx)?))
     }
 
@@ -1521,7 +1488,7 @@ impl<I: Strategy> Strategy for fn(I) {
         cx: &mut impl HostContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
-    ) -> Result<(), HostMarshalError> {
+    ) -> anyhow::Result<()> {
         *out_ptr.cast::<u64>().write(cx)? = value.id();
 
         Ok(())

@@ -145,7 +145,7 @@ impl EnvBindingsHandle {
             let IdentifiedTimeout { expires_at, handle } = *first.key();
 
             if expires_at > now {
-                continue;
+                break;
             }
 
             let callback = first.remove();

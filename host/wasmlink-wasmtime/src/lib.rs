@@ -4,7 +4,7 @@ use anyhow::Context;
 use arid::World;
 use wasmlink::{
     BUILTIN_CLOSURE_INVOKE, BUILTIN_MEM_ALLOC, FfiPtr, GuestboundViewOf, HostContext,
-    HostMarshalError, HostboundViewOf, Marshal, Port, Strategy,
+    HostboundViewOf, Marshal, Port, Strategy,
 };
 
 // === Aliases === //
@@ -35,7 +35,8 @@ struct WslExports {
 pub trait WslStoreExt {
     fn setup_wsl_exports(&mut self, instance: wasmtime::Instance) -> anyhow::Result<()>;
 
-    fn run_root<R>(&mut self, world: &mut World, f: impl FnOnce(&mut WslContext<'_>) -> R) -> R;
+    fn run_wsl_root<R>(&mut self, world: &mut World, f: impl FnOnce(&mut WslContext<'_>) -> R)
+    -> R;
 }
 
 impl WslStoreExt for WslStore {
@@ -57,7 +58,11 @@ impl WslStoreExt for WslStore {
         Ok(())
     }
 
-    fn run_root<R>(&mut self, world: &mut World, f: impl FnOnce(&mut WslContext<'_>) -> R) -> R {
+    fn run_wsl_root<R>(
+        &mut self,
+        world: &mut World,
+        f: impl FnOnce(&mut WslContext<'_>) -> R,
+    ) -> R {
         assert!(self.data().world.is_none());
 
         self.data_mut().world = Some(NonNull::from(world));
@@ -120,21 +125,21 @@ impl HostContext for WslContext<'_> {
         self.exports().memory.clone().data_mut(self.cx_mut())
     }
 
-    fn alloc(&mut self, align: u32, size: u32) -> Result<FfiPtr<()>, HostMarshalError> {
+    fn alloc(&mut self, align: u32, size: u32) -> anyhow::Result<FfiPtr<()>> {
         self.exports()
             .mem_alloc
             .clone()
             .call(self.cx_mut(), (align, size))
             .map(FfiPtr::new)
-            .map_err(|_| HostMarshalError("failed to allocate memory on guest"))
+            .context("failed to allocate memory on guest")
     }
 
-    fn invoke(&mut self, id: u64, boxed_arg: u32) -> Result<(), HostMarshalError> {
+    fn invoke(&mut self, id: u64, boxed_arg: u32) -> anyhow::Result<()> {
         self.exports()
             .closure_invoke
             .clone()
             .call(self.cx_mut(), (id, boxed_arg))
-            .map_err(|_| HostMarshalError("failed to invoke guest closure"))
+            .context("failed to invoke guest closure")
     }
 }
 

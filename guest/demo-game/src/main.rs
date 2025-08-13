@@ -1,7 +1,7 @@
 use crucible::{
     base::{
         env::IntervalTimer,
-        logging::setup_logger,
+        logging::{setup_logger, tracing},
         task::{
             futures::{self, FutureExt},
             spawn_task,
@@ -39,7 +39,7 @@ async fn main_loop() {
         futures::select! {
             (times_ticked, _alpha) = timer.next().fuse() => {
                 for _ in 0..times_ticked.get() {
-                    // TODO
+                    tracing::info!("Ticking!");
                 }
 
                 window.request_redraw();
