@@ -113,8 +113,8 @@ impl ApplicationHandler for App {
     #[allow(clippy::single_match)]
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
-        window_id: WindowId,
+        _event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
         event: WindowEvent,
     ) {
         let Some(app) = &mut self.0 else {

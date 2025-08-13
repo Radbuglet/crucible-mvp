@@ -1,7 +1,9 @@
+use std::collections::HashSet;
+
 use crucible::{
     base::{
         env::IntervalTimer,
-        logging::{setup_logger, tracing},
+        logging::setup_logger,
         task::{
             futures::{self, FutureExt},
             spawn_task,
@@ -11,9 +13,12 @@ use crucible::{
         color::Bgra8,
         texture::{CpuTexture, GpuDrawArgs},
     },
-    window::app::{Window, WindowEvent},
+    window::{
+        app::{Window, WindowEvent},
+        keyboard::{KeyCode, PhysicalKey},
+    },
 };
-use glam::{UVec2, Vec2, Vec3};
+use glam::Vec2;
 
 fn main() {
     setup_logger();
@@ -24,22 +29,35 @@ async fn main_loop() {
     let mut window = Window::acquire();
     let mut timer = IntervalTimer::new(1. / 60.);
 
-    let mut my_texture = CpuTexture::new(UVec2::new(100, 100));
-    let my_texture_size = my_texture.size();
-    for (pos, color) in my_texture.pixels_enumerate_mut() {
-        let dist = pos.manhattan_distance(my_texture_size / 2) as f32 / 100.0;
-        let dist = 1. - dist;
+    let my_texture = CpuTexture::from_rgba8(
+        image::load_from_memory(include_bytes!("demo1.png"))
+            .unwrap()
+            .to_rgba8(),
+    )
+    .make_gpu();
 
-        *color = Vec3::splat(dist).into();
-    }
-
-    let my_texture = my_texture.make_gpu();
+    let mut pos = Vec2::ZERO;
+    let mut keys_down = HashSet::<KeyCode>::default();
 
     loop {
         futures::select! {
             (times_ticked, _alpha) = timer.next().fuse() => {
                 for _ in 0..times_ticked.get() {
-                    tracing::info!("Ticking!");
+                    if keys_down.contains(&KeyCode::KeyA) {
+                        pos += Vec2::NEG_X;
+                    }
+
+                    if keys_down.contains(&KeyCode::KeyD) {
+                        pos += Vec2::X;
+                    }
+
+                    if keys_down.contains(&KeyCode::KeyW) {
+                        pos += Vec2::NEG_Y;
+                    }
+
+                    if keys_down.contains(&KeyCode::KeyS) {
+                        pos += Vec2::Y;
+                    }
                 }
 
                 window.request_redraw();
@@ -53,11 +71,19 @@ async fn main_loop() {
                             GpuDrawArgs::new()
                                 .textured(&my_texture)
                                 .scale(Vec2::splat(500.))
-                                .translate(Vec2::new(100., 200.)),
+                                .translate(pos),
                         );
                     }
                     WindowEvent::KeyEvent(ev) => {
-                        dbg!(ev);
+                        let PhysicalKey::KeyCode(key) = ev.physical_key else {
+                            continue;
+                        };
+
+                        if ev.pressed {
+                            keys_down.insert(key);
+                        }    else {
+                            keys_down.remove(&key);
+                        }
                     }
                     _ => {}
                 }

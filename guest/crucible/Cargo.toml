@@ -10,6 +10,7 @@ crucible-abi.workspace = true
 enum-ordinalize = "4.3.0"
 futures = "0.3.31"
 glam = { version = "0.30.4", features = ["bytemuck"] }
+image = { version = "0.25.6", default-features = false }
 scopeguard = "1.2.0"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"

@@ -738,6 +738,7 @@ dependencies = [
  "enum-ordinalize",
  "futures",
  "glam",
+ "image",
  "scopeguard",
  "tracing",
  "tracing-subscriber",

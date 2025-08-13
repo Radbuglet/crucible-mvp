@@ -1,6 +1,7 @@
 use std::{iter, slice};
 
 use glam::{Affine2, UVec2, Vec2};
+use image::RgbaImage;
 use wasmlink::{GuestSliceRef, bind_port};
 
 use super::{color::Bgra8, rect::Rect};
@@ -96,6 +97,19 @@ impl CpuTexture {
         assert_eq!(size.x * size.y, pixels.len() as u32);
 
         Self { size, pixels }
+    }
+
+    pub fn from_rgba8(image: RgbaImage) -> Self {
+        let dim = UVec2::new(image.width(), image.height());
+
+        let mut image = Self::from_raw(dim, bytemuck::cast_vec(image.to_vec()));
+
+        for pixel in image.pixels_mut() {
+            let [r, g, b, a] = pixel.to_bytes();
+            *pixel = Bgra8::from_bytes([b, g, r, a]);
+        }
+
+        image
     }
 
     pub fn to_raw(self) -> Vec<Bgra8> {
