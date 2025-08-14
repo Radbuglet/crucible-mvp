@@ -1,4 +1,4 @@
-use std::{collections::hash_map, num::Wrapping, ops::Range};
+use std::{collections::hash_map, ops::Range};
 
 use anyhow::Context;
 use rustc_hash::FxHashMap;
@@ -37,65 +37,69 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<SplitModuleResult> {
     // Maps data segments to a list of ranges associated with symbols.
     let mut data_seg_map = FxHashMap::<u32, Vec<(usize, Range<u32>)>>::default();
 
-    {
-        let mut section_index = Wrapping(usize::MAX);
+    let mut has_linking_section = false;
 
-        for payload in &payloads {
-            if payload.as_section().is_some() {
-                section_index += 1;
-            }
+    for payload in &payloads {
+        match payload {
+            Payload::CustomSection(payload) if payload.name() == "linking" => {
+                let reader = LinkingSectionReader::new(payload.data(), payload.data_offset())?;
 
-            match payload {
-                Payload::CustomSection(payload) if payload.name() == "linking" => {
-                    let reader = LinkingSectionReader::new(payload.data(), payload.data_offset())?;
+                for subsection in reader.subsections() {
+                    let subsection = subsection?;
 
-                    for subsection in reader.subsections() {
-                        let subsection = subsection?;
+                    let Linking::SymbolTable(stab) = subsection else {
+                        continue;
+                    };
 
-                        let Linking::SymbolTable(stab) = subsection else {
-                            continue;
-                        };
+                    for (sym_idx, info) in stab.into_iter().enumerate() {
+                        let info = info?;
 
-                        for (sym_idx, info) in stab.into_iter().enumerate() {
-                            let info = info?;
-
-                            if let SymbolInfo::Data {
-                                symbol:
-                                    Some(DefinedDataSymbol {
-                                        offset,
-                                        size,
-                                        index,
-                                    }),
-                                ..
-                            } = info
-                            {
-                                data_seg_map
-                                    .entry(index)
-                                    .or_default()
-                                    .push((sym_idx, offset..(offset + size)));
-                            }
+                        if let SymbolInfo::Data {
+                            symbol:
+                                Some(DefinedDataSymbol {
+                                    offset,
+                                    size,
+                                    index,
+                                }),
+                            ..
+                        } = info
+                        {
+                            data_seg_map
+                                .entry(index)
+                                .or_default()
+                                .push((sym_idx, offset..(offset + size)));
                         }
                     }
                 }
-                Payload::CustomSection(payload) if payload.name().starts_with("reloc.") => {
-                    let relocs = RelocSection::parse(&mut ByteCursor(payload.data()))?;
-                    let out_vec = orig_reloc_map.ensure_index(relocs.target_section as usize);
-
-                    for reloc in relocs.entries() {
-                        out_vec.push(reloc?);
-                    }
-                }
-                _ => {}
             }
-        }
+            Payload::CustomSection(payload) if payload.name().starts_with("reloc.") => {
+                let relocs = RelocSection::parse(&mut ByteCursor(payload.data()))?;
+                let out_vec = orig_reloc_map.ensure_index(relocs.target_section as usize);
 
-        for vec in &mut orig_reloc_map {
-            vec.sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
+                for reloc in relocs.entries() {
+                    out_vec.push(reloc?);
+                }
+            }
+            Payload::CustomSection(payload) if payload.name() == "linking" => {
+                // In order to distinguish object files from executable WebAssembly modules the
+                // linker can check for the presence of the "linking" custom section which must
+                // exist in all object files.
+                has_linking_section = true;
+            }
+            _ => {}
         }
+    }
 
-        for ranges in data_seg_map.values_mut() {
-            ranges.sort_unstable_by(|(_, a), (_, b)| a.start.cmp(&b.start))
-        }
+    if !has_linking_section {
+        anyhow::bail!("WASM module was not an object file");
+    }
+
+    for vec in &mut orig_reloc_map {
+        vec.sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
+    }
+
+    for ranges in data_seg_map.values_mut() {
+        ranges.sort_unstable_by(|(_, a), (_, b)| a.start.cmp(&b.start))
     }
 
     // Run a second pass to create both the blobs and the split module.
