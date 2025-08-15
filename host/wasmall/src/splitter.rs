@@ -1,8 +1,8 @@
-use std::{collections::hash_map, ops::Range};
+use std::collections::hash_map;
 
 use anyhow::Context;
 use rustc_hash::FxHashMap;
-use wasmparser::{DefinedDataSymbol, Linking, LinkingSectionReader, Parser, Payload, SymbolInfo};
+use wasmparser::{Parser, Payload};
 
 use crate::{
     coder::{WasmallArchive, WasmallWriter},
@@ -19,12 +19,14 @@ pub struct SplitModuleResult {
 pub fn split_module(src: &[u8]) -> anyhow::Result<SplitModuleResult> {
     let _guard = OffsetTracker::new(src);
 
-    // Collect all payloads ahead of time so we don't have to deal with the somewhat arcane parser API.
+    // Collect all payloads ahead of time.
     let payloads = {
         let mut payloads = Vec::new();
+
         for payload in Parser::new(0).parse_all(src) {
             payloads.push(payload?);
         }
+
         payloads
     };
 
@@ -34,43 +36,15 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<SplitModuleResult> {
     // Maps sections to a list of their relocations.
     let mut orig_reloc_map = <Vec<Vec<RelocEntry>>>::new();
 
-    // Maps data segments to a list of ranges associated with symbols.
-    let mut data_seg_map = FxHashMap::<u32, Vec<(usize, Range<u32>)>>::default();
-
     let mut has_linking_section = false;
 
     for payload in &payloads {
         match payload {
             Payload::CustomSection(payload) if payload.name() == "linking" => {
-                let reader = LinkingSectionReader::new(payload.data(), payload.data_offset())?;
-
-                for subsection in reader.subsections() {
-                    let subsection = subsection?;
-
-                    let Linking::SymbolTable(stab) = subsection else {
-                        continue;
-                    };
-
-                    for (sym_idx, info) in stab.into_iter().enumerate() {
-                        let info = info?;
-
-                        if let SymbolInfo::Data {
-                            symbol:
-                                Some(DefinedDataSymbol {
-                                    offset,
-                                    size,
-                                    index,
-                                }),
-                            ..
-                        } = info
-                        {
-                            data_seg_map
-                                .entry(index)
-                                .or_default()
-                                .push((sym_idx, offset..(offset + size)));
-                        }
-                    }
-                }
+                // In order to distinguish object files from executable WebAssembly modules the
+                // linker can check for the presence of the "linking" custom section which must
+                // exist in all object files.
+                has_linking_section = true;
             }
             Payload::CustomSection(payload) if payload.name().starts_with("reloc.") => {
                 let relocs = RelocSection::parse(&mut ByteCursor(payload.data()))?;
@@ -79,12 +53,6 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<SplitModuleResult> {
                 for reloc in relocs.entries() {
                     out_vec.push(reloc?);
                 }
-            }
-            Payload::CustomSection(payload) if payload.name() == "linking" => {
-                // In order to distinguish object files from executable WebAssembly modules the
-                // linker can check for the presence of the "linking" custom section which must
-                // exist in all object files.
-                has_linking_section = true;
             }
             _ => {}
         }
@@ -96,10 +64,6 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<SplitModuleResult> {
 
     for vec in &mut orig_reloc_map {
         vec.sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
-    }
-
-    for ranges in data_seg_map.values_mut() {
-        ranges.sort_unstable_by(|(_, a), (_, b)| a.start.cmp(&b.start))
     }
 
     // Run a second pass to create both the blobs and the split module.

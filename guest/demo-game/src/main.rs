@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crucible::{
     base::{
         env::IntervalTimer,
-        logging::setup_logger,
+        logging::{setup_logger, tracing},
         task::{
             futures::{self, FutureExt},
             spawn_task,

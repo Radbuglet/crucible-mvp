@@ -92,6 +92,7 @@ pub enum RelocEntryType {
     SectionOffsetI32 = 9,
     EventIndexLeb = 10,
     GlobalIndexI32 = 13,
+    TableNumberLeb = 20,
 }
 
 impl RelocEntryType {
@@ -111,6 +112,7 @@ impl RelocEntryType {
             9 => SectionOffsetI32,
             10 => EventIndexLeb,
             13 => GlobalIndexI32,
+            20 => TableNumberLeb,
             _ => anyhow::bail!("unknown relocation type {v}"),
         })
     }
@@ -140,6 +142,7 @@ impl RelocEntryType {
             SectionOffsetI32 => U32,
             EventIndexLeb => VarU32,
             GlobalIndexI32 => U32,
+            TableNumberLeb => VarU32,
         }
     }
 }
