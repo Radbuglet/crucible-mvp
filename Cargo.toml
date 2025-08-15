@@ -6,6 +6,7 @@ members = [
     "host/client",
     "host/renderer",
     "host/server",
+    "host/wasmall",
     "host/wasmlink-wasmtime",
     "shared/crucible-abi",
     "shared/wasmlink",

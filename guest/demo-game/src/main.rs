@@ -65,7 +65,7 @@ async fn main_loop() {
             ev = window.next_event().fuse() => {
                 match ev {
                     WindowEvent::Redraw(mut fb) => {
-                        fb.clear(Bgra8::WHITE);
+                        fb.clear(Bgra8::RED);
 
                         fb.draw(
                             GpuDrawArgs::new()
