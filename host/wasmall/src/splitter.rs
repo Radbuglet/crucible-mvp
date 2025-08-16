@@ -7,8 +7,14 @@ use wasmparser::{Parser, Payload};
 use crate::{
     coder::{WasmallArchive, WasmallWriter},
     reloc::{RelocEntry, RelocSection},
-    util::{len_of, ByteCursor, ByteParse, Leb128WriteExt, OffsetTracker, VecExt},
+    util::{ByteCursor, ByteParse, Leb128WriteExt, OffsetTracker, VecExt, len_of},
 };
+
+#[derive(Debug)]
+pub struct SplitModuleArgs<'a> {
+    pub src: &'a [u8],
+    pub truncate_relocations: bool,
+}
 
 #[derive(Debug)]
 pub struct SplitModuleResult {
@@ -16,10 +22,15 @@ pub struct SplitModuleResult {
     pub bytes_truncated: usize,
 }
 
-pub fn split_module(src: &[u8]) -> anyhow::Result<SplitModuleResult> {
+pub fn split_module(args: SplitModuleArgs<'_>) -> anyhow::Result<SplitModuleResult> {
+    let SplitModuleArgs {
+        src,
+        truncate_relocations,
+    } = args;
+
     let _guard = OffsetTracker::new(src);
 
-    // Collect all payloads ahead of time.
+    // Collect all payloads ahead of time to avoid having to repeatedly check for errors.
     let payloads = {
         let mut payloads = Vec::new();
 
@@ -30,8 +41,8 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<SplitModuleResult> {
         payloads
     };
 
-    // Run a first pass to collect all relocations from the file as well as the locations of data
-    // ranges we can turn into blobs.
+    // Run a first pass to collect all relocations from the file. This also lets us entire that
+    // relocations are even available to us in the first place.
 
     // Maps sections to a list of their relocations.
     let mut orig_reloc_map = <Vec<Vec<RelocEntry>>>::new();
@@ -59,7 +70,7 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<SplitModuleResult> {
     }
 
     if !has_linking_section {
-        anyhow::bail!("WASM module was not an object file");
+        anyhow::bail!("WASM module lacks relocation information");
     }
 
     for vec in &mut orig_reloc_map {
@@ -70,23 +81,17 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<SplitModuleResult> {
     let mut writer = WasmallWriter::default();
     let mut bytes_truncated = 0;
     {
-        // Write the magic number
-        writer.push_verbatim(|sink| {
-            #[rustfmt::skip]
-            sink.extend_from_slice(&[
-                // Magic
-                0x00, 0x61, 0x73, 0x6D,
-				// Version
-                0x01, 0x00, 0x00, 0x00,
-            ]);
-        });
-
         // Write the file's sections
         let mut parser = payloads.iter().peekable();
         let mut section_idx = 0;
 
         while let Some(payload) = parser.next() {
             match payload {
+                Payload::Version { range, .. } => {
+                    writer.push_verbatim(|sink| {
+                        sink.extend_from_slice(&src[range.clone()]);
+                    });
+                }
                 Payload::CodeSectionStart { range, count, .. } => {
                     let section_start = range.start;
 
@@ -210,29 +215,48 @@ pub fn split_module(src: &[u8]) -> anyhow::Result<SplitModuleResult> {
                         writer.push_blob(&local_relocations, &local_relocation_values, entry_data);
                     }
                 }
-                // TODO: Handle data segments as well
                 payload => {
-                    if let Some((section_id, section_range)) = payload.as_section() {
-                        if matches!(payload, Payload::CustomSection(_)) {
-                            bytes_truncated += section_range.len();
-                        } else {
-                            writer.push_verbatim::<anyhow::Result<_>>(|sink| {
-                                // Write section ID
-                                sink.push(section_id);
+                    let Some((section_id, section_range)) = payload.as_section() else {
+                        match payload {
+                            // Processed by another case.
+                            Payload::Version { .. } => unreachable!(),
 
-                                // Write section length
-                                sink.write_var_u32(
-                                    u32::try_from(section_range.len())
-                                        .context("section is too big")?,
-                                );
+                            // Processed by another case.
+                            Payload::CodeSectionEntry(..) => unreachable!(),
 
-                                // Write section data
-                                sink.extend_from_slice(&src[section_range]);
+                            // Nothing to do.
+                            Payload::End(_) => {}
 
-                                Ok(())
-                            })?;
+                            // These are the only virtual payloads the parser can emit.
+                            _ => unreachable!(),
                         }
+
+                        continue;
+                    };
+
+                    // Truncate out relocations because they're no longer needed.
+                    if let Payload::CustomSection(cs) = payload
+                        && (cs.name() == "linking" || cs.name() == "reloc.")
+                        && truncate_relocations
+                    {
+                        bytes_truncated += section_range.len();
+                        continue;
                     }
+
+                    writer.push_verbatim::<anyhow::Result<_>>(|sink| {
+                        // Write section ID
+                        sink.push(section_id);
+
+                        // Write section length
+                        sink.write_var_u32(
+                            u32::try_from(section_range.len()).context("section is too big")?,
+                        );
+
+                        // Write section data
+                        sink.extend_from_slice(&src[section_range]);
+
+                        Ok(())
+                    })?;
                 }
             }
 

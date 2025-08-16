@@ -1,13 +1,19 @@
 use anyhow::Context;
 use rustc_hash::FxHashSet;
-use wasmall::splitter::split_module;
+use wasmall::splitter::{SplitModuleArgs, split_module};
 
 fn main() -> anyhow::Result<()> {
     let left_src = std::fs::read(std::env::args().nth(1).context("missing left path")?)?;
     let right_src = std::fs::read(std::env::args().nth(2).context("missing right path")?)?;
 
-    let left_mod = split_module(&left_src)?;
-    let right_mod = split_module(&right_src)?;
+    let left_mod = split_module(SplitModuleArgs {
+        src: &left_src,
+        truncate_relocations: true,
+    })?;
+    let right_mod = split_module(SplitModuleArgs {
+        src: &right_src,
+        truncate_relocations: true,
+    })?;
 
     let left_set = FxHashSet::from_iter(left_mod.archive.hashes.keys().copied());
     let right_set = FxHashSet::from_iter(right_mod.archive.hashes.keys().copied());
@@ -33,7 +39,7 @@ fn main() -> anyhow::Result<()> {
         left_mod.archive.out_buf.len() as isize - left_src_len_post_trunc as isize,
     );
 
-	println!(
+    println!(
         "Right compression size: {} / {} ({}%), delta: {}",
         right_mod.archive.out_buf.len(),
         right_src_len_post_trunc,

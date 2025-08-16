@@ -10,6 +10,7 @@ roundtrip: build
     cargo run -p wasmall --bin roundtrip -- target/wasm32-unknown-unknown/debug/demo-game.wasm > private/one.wasm
     wasm2wat target/wasm32-unknown-unknown/debug/demo-game.wasm > private/two.wat
     wasm2wat private/one.wasm > private/one.wat
+    diff private/one.wat private/two.wat > private/diff.txt
 
 compare-save-left: build
     mkdir -p private/

@@ -1,6 +1,7 @@
 use core::fmt;
 use std::{
     any::type_name,
+    array,
     collections::BTreeMap,
     io::ErrorKind,
     marker::PhantomData,
@@ -17,33 +18,31 @@ mod extension_for {
     pub trait Sealed<T: ?Sized> {}
 }
 
-pub trait ExtensionFor<T: ?Sized>: extension_for::Sealed<T> {
-    fn v(&self) -> &T;
-
-    fn v_mut(&mut self) -> &mut T;
-}
+pub trait ExtensionFor<T: ?Sized>: extension_for::Sealed<T> {}
 
 impl<T: ?Sized> extension_for::Sealed<T> for T {}
 
-impl<T: ?Sized> ExtensionFor<T> for T {
-    fn v(&self) -> &T {
-        self
-    }
-
-    fn v_mut(&mut self) -> &mut T {
-        self
-    }
-}
+impl<T: ?Sized> ExtensionFor<T> for T {}
 
 // === VecExt === //
 
 pub trait VecExt<T>: ExtensionFor<Vec<T>> {
     fn ensure_length(&mut self, len: usize)
     where
+        T: Default;
+
+    fn ensure_index(&mut self, index: usize) -> &mut T
+    where
+        T: Default;
+}
+
+impl<T> VecExt<T> for Vec<T> {
+    fn ensure_length(&mut self, len: usize)
+    where
         T: Default,
     {
-        if self.v_mut().len() < len {
-            self.v_mut().resize_with(len, Default::default);
+        if self.len() < len {
+            self.resize_with(len, Default::default);
         }
     }
 
@@ -52,26 +51,32 @@ pub trait VecExt<T>: ExtensionFor<Vec<T>> {
         T: Default,
     {
         self.ensure_length(index + 1);
-        &mut self.v_mut()[index]
+        &mut self[index]
     }
 }
 
-impl<T> VecExt<T> for Vec<T> {}
-
 pub trait SliceExt<T>: ExtensionFor<[T]> {
+    fn limit_len(&self, len: usize) -> &[T];
+
+    fn to_array<const N: usize>(&self) -> [T; N]
+    where
+        T: Copy;
+}
+
+impl<T> SliceExt<T> for [T] {
     fn limit_len(&self, len: usize) -> &[T] {
-        &self.v()[..self.v().len().min(len)]
+        &self[..self.len().min(len)]
     }
 
     fn to_array<const N: usize>(&self) -> [T; N]
     where
         T: Copy,
     {
-        std::array::from_fn(|i| self.v()[i])
+        assert!(self.len() >= N);
+
+        array::from_fn(|i| self[i])
     }
 }
-
-impl<T> SliceExt<T> for [T] {}
 
 // === OffsetTracker === //
 
@@ -372,8 +377,6 @@ impl<'a> ByteCursor<'a> {
         }
     }
 
-    //
-
     pub fn read_expecting_width<R>(
         &mut self,
         width: usize,
@@ -409,20 +412,27 @@ pub trait ByteSliceExt: ExtensionFor<[u8]> {
     fn try_count_bytes_read(
         &self,
         f: impl FnOnce(&mut ByteCursor<'_>) -> anyhow::Result<()>,
+    ) -> anyhow::Result<usize>;
+
+    fn count_bytes_read(&self, f: impl FnOnce(&mut ByteCursor<'_>)) -> usize;
+}
+
+impl ByteSliceExt for [u8] {
+    fn try_count_bytes_read(
+        &self,
+        f: impl FnOnce(&mut ByteCursor<'_>) -> anyhow::Result<()>,
     ) -> anyhow::Result<usize> {
-        let mut buf = ByteCursor(self.v());
+        let mut buf = ByteCursor(self);
         f(&mut buf)?;
-        Ok(self.v().len() - buf.0.len())
+        Ok(self.len() - buf.0.len())
     }
 
     fn count_bytes_read(&self, f: impl FnOnce(&mut ByteCursor<'_>)) -> usize {
-        let mut buf = ByteCursor(self.v());
+        let mut buf = ByteCursor(self);
         f(&mut buf);
-        self.v().len() - buf.0.len()
+        self.len() - buf.0.len()
     }
 }
-
-impl ByteSliceExt for [u8] {}
 
 // ByteParse
 pub trait ByteParse<'a>: Sized {

@@ -3,14 +3,18 @@ use std::io::Write;
 use anyhow::Context;
 use wasmall::{
     coder::{WasmallBlob, WasmallMod, WasmallModSeg},
-    splitter::split_module,
+    splitter::{SplitModuleArgs, split_module},
     util::{ByteCursor, ByteParse, OffsetTracker},
 };
 
 fn main() -> anyhow::Result<()> {
     // Compress it
     let code = std::fs::read(std::env::args().nth(1).context("missing path")?)?;
-    let archive = split_module(&code)?.archive;
+    let archive = split_module(SplitModuleArgs {
+        src: &code,
+        truncate_relocations: false,
+    })?
+    .archive;
 
     // Decompress it
     let _guard = OffsetTracker::new(&archive.out_buf);
