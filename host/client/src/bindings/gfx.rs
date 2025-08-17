@@ -20,6 +20,7 @@ pub struct GfxBindings {
 #[derive(Debug, Copy, Clone)]
 pub struct WindowCallbacks {
     pub redraw_requested: HostClosure<abi::RedrawRequestedArgs>,
+    pub mouse_event: HostClosure<abi::MouseEvent>,
     pub mouse_moved: HostClosure<abi::DVec2>,
     pub key_event: HostClosure<abi::KeyEvent>,
     pub exit_requested: HostClosure<()>,
@@ -57,6 +58,7 @@ impl GfxBindingsHandle {
 
             self.m(w).callbacks = Some(WindowCallbacks {
                 redraw_requested: args.redraw_requested,
+                mouse_event: args.mouse_event,
                 mouse_moved: args.mouse_moved,
                 key_event: args.key_event,
                 exit_requested: args.exit_requested,

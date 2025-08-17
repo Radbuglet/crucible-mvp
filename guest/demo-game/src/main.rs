@@ -15,7 +15,7 @@ use crucible::{
     },
     window::{
         app::{Window, WindowEvent},
-        keyboard::{KeyCode, PhysicalKey},
+        defs::{KeyCode, PhysicalKey},
     },
 };
 use glam::Vec2;

@@ -6,7 +6,7 @@ use arid_entity::EntityHandle;
 use futures::executor::block_on;
 use wasmlink_wasmtime::{WslLinker, WslStore, WslStoreExt, WslStoreState};
 use winit::{
-    event::{KeyEvent, StartCause, WindowEvent},
+    event::{KeyEvent, MouseButton, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard,
     window::{WindowAttributes, WindowId},
@@ -184,6 +184,28 @@ impl FallibleApplicationHandler for App {
                     )
                 })?;
             }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let Some(cbs) = init.gfx_bindings.callbacks(w) else {
+                    return Ok(());
+                };
+
+                init.store.run_wsl_root(w, |cx| {
+                    cbs.mouse_event.call(
+                        cx,
+                        &crucible_abi::MouseEvent {
+                            button: match button {
+                                MouseButton::Left => crucible_abi::MouseButton::Left(()),
+                                MouseButton::Right => crucible_abi::MouseButton::Right(()),
+                                MouseButton::Middle => crucible_abi::MouseButton::Middle(()),
+                                MouseButton::Back => crucible_abi::MouseButton::Back(()),
+                                MouseButton::Forward => crucible_abi::MouseButton::Forward(()),
+                                MouseButton::Other(id) => crucible_abi::MouseButton::Other(*id),
+                            },
+                            pressed: state.is_pressed(),
+                        },
+                    )
+                })?;
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -210,22 +232,35 @@ impl FallibleApplicationHandler for App {
                                 keyboard::PhysicalKey::Unidentified(_) => None,
                             },
                             logical_key: match logical_key {
-                                keyboard::Key::Named(named_key) => crucible_abi::LogicalKey {
-                                    named: Some(*named_key as u32),
-                                    character: None,
-                                },
-                                keyboard::Key::Character(ch) => crucible_abi::LogicalKey {
-                                    named: None,
-                                    character: Some(ch),
-                                },
-                                keyboard::Key::Unidentified(_) => crucible_abi::LogicalKey {
-                                    named: None,
-                                    character: None,
-                                },
-                                keyboard::Key::Dead(_) => crucible_abi::LogicalKey {
-                                    named: None,
-                                    character: None,
-                                },
+                                keyboard::Key::Named(named_key) => {
+                                    crucible_abi::LogicalKey::Named(*named_key as u32)
+                                }
+                                keyboard::Key::Character(ch) => {
+                                    crucible_abi::LogicalKey::Character(ch.as_str())
+                                }
+                                keyboard::Key::Unidentified(code) => {
+                                    crucible_abi::LogicalKey::Unidentified(match code {
+                                        keyboard::NativeKey::Unidentified => {
+                                            crucible_abi::NativeKey::Unidentified(())
+                                        }
+                                        keyboard::NativeKey::Android(v) => {
+                                            crucible_abi::NativeKey::Android(*v)
+                                        }
+                                        keyboard::NativeKey::MacOS(v) => {
+                                            crucible_abi::NativeKey::MacOS(*v)
+                                        }
+                                        keyboard::NativeKey::Windows(v) => {
+                                            crucible_abi::NativeKey::Windows(*v)
+                                        }
+                                        keyboard::NativeKey::Xkb(v) => {
+                                            crucible_abi::NativeKey::Xkb(*v)
+                                        }
+                                        keyboard::NativeKey::Web(v) => {
+                                            crucible_abi::NativeKey::Web(v.as_str())
+                                        }
+                                    })
+                                }
+                                keyboard::Key::Dead(ch) => crucible_abi::LogicalKey::Dead(*ch),
                             },
                             text: text.as_deref(),
                             location: *location as u32,

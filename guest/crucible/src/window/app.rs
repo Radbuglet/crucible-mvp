@@ -7,10 +7,12 @@ use wasmlink::{OwnedGuestClosure, bind_port};
 use crate::{
     base::{env::RunMode, task::wake_executor},
     gfx::texture::GpuTexture,
-    window::keyboard::{Key, KeyCode, KeyLocation, NamedKey, PhysicalKey},
+    window::defs::{
+        Key, KeyCode, KeyLocation, MouseButton, MouseEvent, NamedKey, NativeKey, PhysicalKey,
+    },
 };
 
-use super::keyboard::KeyEvent;
+use super::defs::KeyEvent;
 
 // === Window === //
 
@@ -21,6 +23,7 @@ pub struct Window {
     rx: mpsc::UnboundedReceiver<WindowEvent>,
     _redraw_requested: OwnedGuestClosure<crucible_abi::RedrawRequestedArgs>,
     _mouse_moved: OwnedGuestClosure<crucible_abi::DVec2>,
+    _mouse_event: OwnedGuestClosure<crucible_abi::MouseEvent>,
     _key_event: OwnedGuestClosure<crucible_abi::KeyEvent>,
     _exit_requested: OwnedGuestClosure<()>,
 }
@@ -30,6 +33,7 @@ pub struct Window {
 pub enum WindowEvent {
     Redraw(GpuTexture),
     MouseMoved(DVec2),
+    MouseEvent(MouseEvent),
     KeyEvent(KeyEvent),
     ExitRequested,
 }
@@ -74,6 +78,27 @@ impl Window {
             }
         });
 
+        let mouse_event = OwnedGuestClosure::<crucible_abi::MouseEvent>::new({
+            let tx = tx.clone();
+
+            move |arg| {
+                tx.unbounded_send(WindowEvent::MouseEvent(MouseEvent {
+                    button: match arg.button {
+                        crucible_abi::MouseButton::Left(()) => MouseButton::Left,
+                        crucible_abi::MouseButton::Right(()) => MouseButton::Right,
+                        crucible_abi::MouseButton::Middle(()) => MouseButton::Middle,
+                        crucible_abi::MouseButton::Back(()) => MouseButton::Back,
+                        crucible_abi::MouseButton::Forward(()) => MouseButton::Forward,
+                        crucible_abi::MouseButton::Other(code) => MouseButton::Other(code),
+                    },
+                    pressed: arg.pressed,
+                }))
+                .unwrap();
+
+                wake_executor();
+            }
+        });
+
         let key_event = OwnedGuestClosure::<crucible_abi::KeyEvent>::new({
             let tx = tx.clone();
 
@@ -83,14 +108,24 @@ impl Window {
                         Some(v) => PhysicalKey::KeyCode(KeyCode::from_winit(v).unwrap()),
                         None => PhysicalKey::Unknown,
                     },
-                    logical_key: match (
-                        arg.logical_key.named.decode(),
-                        arg.logical_key.character.decode(),
-                    ) {
-                        (None, None) => Key::Unknown,
-                        (None, Some(v)) => Key::Character(v.decode()),
-                        (Some(v), None) => Key::Named(NamedKey::from_winit(v).unwrap()),
-                        (Some(_), Some(_)) => unreachable!(),
+                    logical_key: match arg.logical_key {
+                        crucible_abi::LogicalKey::Named(key) => {
+                            Key::Named(NamedKey::from_winit(key).unwrap())
+                        }
+                        crucible_abi::LogicalKey::Character(ch) => Key::Character(ch.decode()),
+                        crucible_abi::LogicalKey::Unidentified(native) => {
+                            Key::Unidentified(match native {
+                                crucible_abi::NativeKey::Unidentified(()) => {
+                                    NativeKey::Unidentified
+                                }
+                                crucible_abi::NativeKey::Android(v) => NativeKey::Android(v),
+                                crucible_abi::NativeKey::MacOS(v) => NativeKey::MacOS(v),
+                                crucible_abi::NativeKey::Windows(v) => NativeKey::Windows(v),
+                                crucible_abi::NativeKey::Xkb(v) => NativeKey::Xkb(v),
+                                crucible_abi::NativeKey::Web(v) => NativeKey::Web(v.decode()),
+                            })
+                        }
+                        crucible_abi::LogicalKey::Dead(key) => Key::Dead(key.decode()),
                     },
                     text: arg.text.decode().map(|v| v.decode()),
                     location: KeyLocation::from_winit(arg.location).unwrap(),
@@ -115,6 +150,7 @@ impl Window {
         window_bind_handlers(&crucible_abi::WindowHandlers {
             redraw_requested: redraw_requested.handle(),
             mouse_moved: mouse_moved.handle(),
+            mouse_event: mouse_event.handle(),
             key_event: key_event.handle(),
             exit_requested: exit_requested.handle(),
         });
@@ -123,6 +159,7 @@ impl Window {
             rx,
             _redraw_requested: redraw_requested,
             _mouse_moved: mouse_moved,
+            _mouse_event: mouse_event,
             _key_event: key_event,
             _exit_requested: exit_requested,
         }

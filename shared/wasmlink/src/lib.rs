@@ -1276,6 +1276,137 @@ macro_rules! marshal_enum {
     )*};
 }
 
+// === Tagged Union Marshalling === //
+
+// Macro
+pub mod marshal_tagged_union_internals {
+    pub use {
+        super::{
+            FfiPtr, GuestboundOf, GuestboundVariant, GuestboundViewVariant, HostContext,
+            HostboundOf, HostboundVariant, HostboundViewVariant, MarkerVariant, Marshal, Strategy,
+            VariantSelector, ffi_offset,
+        },
+        anyhow::{Result, bail},
+    };
+
+    pub mod primitives {
+        // From: https://doc.rust-lang.org/reference/type-layout.html#r-layout.repr.primitive.intro
+        pub use std::primitive::{i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize};
+    }
+
+    #[repr(C)]
+    pub struct CPair<D, V> {
+        pub discriminant: D,
+        pub value: V,
+    }
+}
+
+#[macro_export]
+macro_rules! marshal_tagged_union {
+    ($(
+        $(#[$($item_meta:tt)*])*
+        $item_vis:vis enum $item_name:ident : $repr:ident {
+            $(
+                $(#[$($field_meta:tt)*])*
+                $variant_name:ident($variant_ty:ty)
+            ),+
+            $(,)?
+        }
+    )*) => {$(
+        $(#[$($item_meta:tt)*])*
+        // Represent the enum as a union of `(tag, value)` variants.
+        // See: https://github.com/rust-lang/rfcs/blob/2ad779b99015e2a609ef416877485604d4799069/text/2195-really-tagged-unions.md#guide-level-explanation
+        #[repr($repr)]
+        $item_vis enum $item_name<
+            V: $crate::marshal_tagged_union_internals::VariantSelector = $crate::marshal_tagged_union_internals::MarkerVariant
+        > {
+            $(
+                $variant_name(<V as $crate::marshal_tagged_union_internals::VariantSelector>::Output<
+                    <$variant_ty as $crate::marshal_tagged_union_internals::Marshal>::Strategy
+                >),
+            )*
+        }
+
+        impl $crate::marshal_tagged_union_internals::Marshal for $item_name {
+            type Strategy = Self;
+        }
+
+        impl $crate::marshal_tagged_union_internals::Strategy for $item_name {
+            type Hostbound<'a> = $item_name<$crate::marshal_tagged_union_internals::HostboundVariant<'a>>;
+            type HostboundView = $item_name<$crate::marshal_tagged_union_internals::HostboundViewVariant>;
+            type Guestbound = $item_name<$crate::marshal_tagged_union_internals::GuestboundVariant>;
+            type GuestboundView<'a> = $item_name<$crate::marshal_tagged_union_internals::GuestboundViewVariant<'a>>;
+
+            fn decode_hostbound(
+                cx: &impl $crate::marshal_tagged_union_internals::HostContext,
+                ptr: $crate::marshal_tagged_union_internals::FfiPtr<Self::Hostbound<'static>>,
+            ) -> $crate::marshal_tagged_union_internals::Result<Self::HostboundView> {
+                let variant = *ptr.cast::<$crate::marshal_tagged_union_internals::primitives::$repr>().read(cx)?;
+                let counter = 0;
+
+                $(
+                    if variant == counter {
+                        type VariantTy = $crate::marshal_tagged_union_internals::CPair<
+                            $crate::marshal_tagged_union_internals::primitives::$repr,
+                            $crate::marshal_tagged_union_internals::HostboundOf<'static, $variant_ty>,
+                        >;
+
+                        let field = ptr
+                            .cast::<VariantTy>()
+                            .field($crate::marshal_tagged_union_internals::ffi_offset!(VariantTy, value));
+
+                        return Ok(Self::HostboundView::$variant_name(
+                            <<$variant_ty as $crate::marshal_tagged_union_internals::Marshal>::Strategy>::decode_hostbound(
+                                cx,
+                                field,
+                            )?,
+                        ))
+                    }
+
+                    let counter = counter + 1;
+                )*
+
+                $crate::marshal_tagged_union_internals::bail!("unknown enum variant")
+            }
+
+            fn encode_guestbound(
+                cx: &mut impl $crate::marshal_tagged_union_internals::HostContext,
+                out_ptr: $crate::marshal_tagged_union_internals::FfiPtr<Self::Guestbound>,
+                value: &Self::GuestboundView<'_>,
+            ) -> $crate::marshal_tagged_union_internals::Result<()> {
+                let counter = 0;
+
+                $(
+                    if let Self::GuestboundView::$variant_name(value) = value {
+                        type VariantTy = $crate::marshal_tagged_union_internals::CPair<
+                            $crate::marshal_tagged_union_internals::primitives::$repr,
+                            $crate::marshal_tagged_union_internals::GuestboundOf<$variant_ty>,
+                        >;
+
+                        *out_ptr.cast::<$crate::marshal_tagged_union_internals::primitives::$repr>().write(cx)? = counter;
+
+                        let field = out_ptr
+                            .cast::<VariantTy>()
+                            .field($crate::marshal_tagged_union_internals::ffi_offset!(VariantTy, value));
+
+                        <<$variant_ty as $crate::marshal_tagged_union_internals::Marshal>::Strategy>::encode_guestbound(
+                            cx,
+                            field,
+                            value,
+                        )?;
+
+                        return Ok(());
+                    }
+
+                    let counter = counter + 1;
+                )*
+
+                unreachable!()
+            }
+        }
+    )*};
+}
+
 // === Closure === //
 
 // Host View

@@ -2,7 +2,6 @@ run: build
     cargo run --bin crucible-client -- ./target/wasm32-unknown-unknown/debug/demo-game.wasm
 
 build:
-    # TODO: add back `-- -C link-args="-r" -C link-dead-code`?
     cargo rustc -p demo-game --target wasm32-unknown-unknown -- -C link-args="--emit-relocs"
 
 roundtrip: build

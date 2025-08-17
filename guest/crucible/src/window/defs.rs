@@ -1,13 +1,116 @@
 use enum_ordinalize::Ordinalize;
 
+// === Mouse === //
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub struct MouseEvent {
+    pub button: MouseButton,
+    pub pressed: bool,
+}
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+    Back,
+    Forward,
+    Other(u16),
+}
+
+// === Keyboard === //
+
+/// Describes a keyboard input targeting a window.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct KeyEvent {
+    /// Represents the position of a key independent of the currently active layout.
+    ///
+    /// It also uniquely identifies the physical key (i.e. it's mostly synonymous with a scancode).
+    /// The most prevalent use case for this is games. For example the default keys for the player
+    /// to move around might be the W, A, S, and D keys on a US layout. The position of these keys
+    /// is more important than their label, so they should map to Z, Q, S, and D on an "AZERTY"
+    /// layout. (This value is `KeyCode::KeyW` for the Z key on an AZERTY layout.)
+    ///
+    /// ## Caveats
+    ///
+    /// - Certain niche hardware will shuffle around physical key positions, e.g. a keyboard that
+    ///   implements DVORAK in hardware (or firmware)
+    /// - Your application will likely have to handle keyboards which are missing keys that your
+    ///   own keyboard has.
+    /// - Certain `KeyCode`s will move between a couple of different positions depending on what
+    ///   layout the keyboard was manufactured to support.
+    ///
+    ///  **Because of these caveats, it is important that you provide users with a way to configure
+    ///  most (if not all) keybinds in your application.**
+    ///
+    /// ## `Fn` and `FnLock`
+    ///
+    /// `Fn` and `FnLock` key events are *exceedingly unlikely* to be emitted by Winit. These keys
+    /// are usually handled at the hardware or OS level, and aren't surfaced to applications. If
+    /// you somehow see this in the wild, we'd like to know :)
     pub physical_key: PhysicalKey,
+
+    /// This value is affected by all modifiers except <kbd>Ctrl</kbd>.
+    ///
+    /// This has two use cases:
+    /// - Allows querying whether the current input is a Dead key.
+    /// - Allows handling key-bindings on platforms which don't support [`key_without_modifiers`].
+    ///
+    /// If you use this field (or [`key_without_modifiers`] for that matter) for keyboard
+    /// shortcuts, **it is important that you provide users with a way to configure your
+    /// application's shortcuts so you don't render your application unusable for users with an
+    /// incompatible keyboard layout.**
+    ///
+    /// ## Platform-specific
+    /// - **Web:** Dead keys might be reported as the real key instead of `Dead` depending on the
+    ///   browser/OS.
+    ///
+    /// [`key_without_modifiers`]: KeyEvent::key_without_modifiers
     pub logical_key: Key,
+
+    /// Contains the text produced by this keypress.
+    ///
+    /// In most cases this is identical to the content
+    /// of the `Character` variant of `logical_key`.
+    /// However, on Windows when a dead key was pressed earlier
+    /// but cannot be combined with the character from this
+    /// keypress, the produced text will consist of two characters:
+    /// the dead-key-character followed by the character resulting
+    /// from this keypress.
+    ///
+    /// An additional difference from `logical_key` is that
+    /// this field stores the text representation of any key
+    /// that has such a representation. For example when
+    /// `logical_key` is `Key::Named(NamedKey::Enter)`, this field is `Some("\r")`.
+    ///
+    /// This is `None` if the current keypress cannot
+    /// be interpreted as text.
+    ///
+    /// See also: `text_with_all_modifiers()`
     pub text: Option<String>,
+
+    /// Contains the location of this key on the keyboard.
+    ///
+    /// Certain keys on the keyboard may appear in more than once place. For example, the "Shift"
+    /// key appears on the left side of the QWERTY keyboard as well as the right side. However,
+    /// both keys have the same symbolic value. Another example of this phenomenon is the "1"
+    /// key, which appears both above the "Q" key and as the "Keypad 1" key.
+    ///
+    /// This field allows the user to differentiate between keys like this that have the same
+    /// symbolic value but different locations on the keyboard.
+    ///
+    /// See the [`KeyLocation`] type for more details.
     pub location: KeyLocation,
+
+    /// Whether the key is being pressed or released.
     pub pressed: bool,
+
+    /// Whether or not this key is a key repeat event.
+    ///
+    /// On some systems, holding down a key for some period of time causes that key to be repeated
+    /// as though it were being pressed and released repeatedly. This field is `true` if and only
+    /// if this event is the result of one of those repeats.
     pub repeat: bool,
 }
 
@@ -478,7 +581,43 @@ pub enum Key {
     /// effect.
     Character(String),
 
-    Unknown,
+    /// This variant is used when the key cannot be translated to any other variant.
+    ///
+    /// The native key is provided (if available) in order to allow the user to specify keybindings
+    /// for keys which are not defined by this API, mainly through some sort of UI.
+    Unidentified(NativeKey),
+
+    /// Contains the text representation of the dead-key when available.
+    ///
+    /// ## Platform-specific
+    /// - **Web:** Always contains `None`
+    Dead(Option<char>),
+}
+
+/// Contains the platform-native logical key identifier
+///
+/// Exactly what that means differs from platform to platform, but the values are to some degree
+/// tied to the currently active keyboard layout. The same key on the same keyboard may also report
+/// different values on different platforms, which is one of the reasons this is a per-platform
+/// enum.
+///
+/// This enum is primarily used to store raw keysym when Winit doesn't map a given native logical
+/// key identifier to a meaningful [`Key`] variant. This lets you use [`Key`], and let the user
+/// define keybinds which work in the presence of identifiers we haven't mapped for you yet.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum NativeKey {
+    Unidentified,
+    /// An Android "keycode", which is similar to a "virtual-key code" on Windows.
+    Android(u32),
+    /// A macOS "scancode". There does not appear to be any direct analogue to either keysyms or
+    /// "virtual-key" codes in macOS, so we report the scancode instead.
+    MacOS(u16),
+    /// A Windows "virtual-key code".
+    Windows(u16),
+    /// An XKB "keysym".
+    Xkb(u32),
+    /// A "key value string".
+    Web(String),
 }
 
 #[non_exhaustive]
