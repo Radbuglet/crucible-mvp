@@ -90,6 +90,10 @@ impl FallibleApplicationHandler for App {
                 Ok(())
             })?;
 
+            if gfx_bindings.callbacks(w).is_none() {
+                anyhow::bail!("`Window` must be `acquire`'d before the first `.await`-point");
+            }
+
             // Mark as initialized
             window.set_visible(true);
 
@@ -232,7 +236,12 @@ impl FallibleApplicationHandler for App {
                 })?;
             }
             WindowEvent::CloseRequested => {
-                // TODO
+                let Some(cbs) = init.gfx_bindings.callbacks(w) else {
+                    return Ok(());
+                };
+
+                init.store
+                    .run_wsl_root(w, |cx| cbs.exit_requested.call(cx, &()))?;
             }
             _ => {}
         }
@@ -251,10 +260,14 @@ impl FallibleApplicationHandler for App {
             init.main_window.window(w).request_redraw();
         }
 
-        if let Some(timeout) = init.env_bindings.earliest_timeout(&self.world) {
+        if let Some(timeout) = init.env_bindings.earliest_timeout(w) {
             event_loop.set_control_flow(ControlFlow::WaitUntil(timeout));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
+        }
+
+        if init.gfx_bindings.callbacks(w).is_none() {
+            event_loop.exit();
         }
 
         self.world.flush();

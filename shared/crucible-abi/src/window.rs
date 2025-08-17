@@ -17,6 +17,7 @@ marshal_struct! {
         pub redraw_requested: fn(RedrawRequestedArgs),
         pub mouse_moved: fn(DVec2),
         pub key_event: fn(KeyEvent),
+        pub exit_requested: fn(()),
     }
 
     pub struct KeyEvent {

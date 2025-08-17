@@ -22,6 +22,7 @@ pub struct WindowCallbacks {
     pub redraw_requested: HostClosure<abi::RedrawRequestedArgs>,
     pub mouse_moved: HostClosure<abi::DVec2>,
     pub key_event: HostClosure<abi::KeyEvent>,
+    pub exit_requested: HostClosure<()>,
 }
 
 component!(pub GfxBindings);
@@ -58,6 +59,7 @@ impl GfxBindingsHandle {
                 redraw_requested: args.redraw_requested,
                 mouse_moved: args.mouse_moved,
                 key_event: args.key_event,
+                exit_requested: args.exit_requested,
             });
 
             ret.finish(cx, &())

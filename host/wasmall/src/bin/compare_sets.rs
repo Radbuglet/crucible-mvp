@@ -18,11 +18,19 @@ fn main() -> anyhow::Result<()> {
     let left_set = FxHashSet::from_iter(left_mod.archive.hashes.keys().copied());
     let right_set = FxHashSet::from_iter(right_mod.archive.hashes.keys().copied());
 
+    println!("Blobs changed:");
+
     for diff in left_set.symmetric_difference(&right_set) {
         if left_set.contains(diff) {
-            println!("- {diff}");
+            println!(
+                "- {diff} (byte size: {})",
+                left_mod.archive.blob_buf[left_mod.archive.hashes[diff].clone()].len(),
+            );
         } else {
-            println!("+ {diff}");
+            println!(
+                "+ {diff} (byte size: {})",
+                right_mod.archive.blob_buf[right_mod.archive.hashes[diff].clone()].len(),
+            );
         }
     }
 
@@ -30,7 +38,7 @@ fn main() -> anyhow::Result<()> {
     let right_src_len_post_trunc = right_src.len() - right_mod.bytes_truncated;
 
     println!(
-        "Left compression size: {} / {} ({}%), delta: {}",
+        "Left verbatim size: {} / {} ({}%), delta: {}",
         left_mod.archive.out_buf.len(),
         left_src_len_post_trunc,
         (left_mod.archive.out_buf.len() as f64
@@ -40,7 +48,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     println!(
-        "Right compression size: {} / {} ({}%), delta: {}",
+        "Right verbatim size: {} / {} ({}%), delta: {}",
         right_mod.archive.out_buf.len(),
         right_src_len_post_trunc,
         (right_mod.archive.out_buf.len() as f64

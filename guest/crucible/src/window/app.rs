@@ -22,6 +22,7 @@ pub struct Window {
     _redraw_requested: OwnedGuestClosure<crucible_abi::RedrawRequestedArgs>,
     _mouse_moved: OwnedGuestClosure<crucible_abi::DVec2>,
     _key_event: OwnedGuestClosure<crucible_abi::KeyEvent>,
+    _exit_requested: OwnedGuestClosure<()>,
 }
 
 #[derive(Debug)]
@@ -30,6 +31,7 @@ pub enum WindowEvent {
     Redraw(GpuTexture),
     MouseMoved(DVec2),
     KeyEvent(KeyEvent),
+    ExitRequested,
 }
 
 impl Window {
@@ -101,10 +103,20 @@ impl Window {
             }
         });
 
+        let exit_requested = OwnedGuestClosure::<()>::new({
+            let tx = tx.clone();
+
+            move |()| {
+                tx.unbounded_send(WindowEvent::ExitRequested).unwrap();
+                wake_executor();
+            }
+        });
+
         window_bind_handlers(&crucible_abi::WindowHandlers {
             redraw_requested: redraw_requested.handle(),
             mouse_moved: mouse_moved.handle(),
             key_event: key_event.handle(),
+            exit_requested: exit_requested.handle(),
         });
 
         Self {
@@ -112,6 +124,7 @@ impl Window {
             _redraw_requested: redraw_requested,
             _mouse_moved: mouse_moved,
             _key_event: key_event,
+            _exit_requested: exit_requested,
         }
     }
 

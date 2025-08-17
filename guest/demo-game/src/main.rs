@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crucible::{
     base::{
         env::IntervalTimer,
-        logging::{setup_logger, tracing},
+        logging::setup_logger,
         task::{
             futures::{self, FutureExt},
             spawn_task,
@@ -84,6 +84,9 @@ async fn main_loop() {
                         }    else {
                             keys_down.remove(&key);
                         }
+                    }
+                    WindowEvent::ExitRequested => {
+                        break;
                     }
                     _ => {}
                 }
