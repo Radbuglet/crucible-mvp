@@ -4,6 +4,7 @@ members = [
     "guest/crucible",
     "guest/demo-game",
     "host/client",
+    "host/protocol",
     "host/renderer",
     "host/server",
     "host/wasmall",

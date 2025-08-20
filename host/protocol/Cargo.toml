@@ -1,0 +1,12 @@
+[package]
+name = "crucible-protocol"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.99"
+bytes = "1.10.1"
+futures = "0.3.31"
+postcard = "1.1.3"
+quinn = { version = "0.11.8", features = ["futures-io"] }
+serde = { version = "1.0.219", features = ["derive"] }
