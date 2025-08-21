@@ -1,24 +1,24 @@
 [workspace]
 resolver = "2"
 members = [
+    "guest/crucible-abi",
     "guest/crucible",
     "guest/demo-game",
     "host/client",
     "host/protocol",
-    "host/renderer",
     "host/server",
-    "host/wasmall",
-    "host/wasmlink-wasmtime",
-    "shared/crucible-abi",
-    "shared/wasmlink",
+    "utils/renderer",
+    "utils/wasmall",
+    "utils/wasmlink-wasmtime",
+    "utils/wasmlink",
 ]
 
 [workspace.dependencies]
 crucible = { path = "guest/crucible" }
-crucible-abi = { path = "shared/crucible-abi" }
-crucible-renderer = { path = "host/renderer" }
-wasmlink = { path = "shared/wasmlink" }
-wasmlink-wasmtime = { path = "host/wasmlink-wasmtime" }
+crucible-abi = { path = "guest/crucible-abi" }
+crucible-renderer = { path = "utils/renderer" }
+wasmlink = { path = "utils/wasmlink" }
+wasmlink-wasmtime = { path = "utils/wasmlink-wasmtime" }
 
 [workspace.dependencies.arid]
 git = "https://github.com/Radbuglet/arid.git"
