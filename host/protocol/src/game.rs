@@ -9,7 +9,23 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SbLoginHello1 {
+pub enum SbHello1 {
+    /// Transitions the connection into the `ServerList` state.
     ServerList,
-    Play { game_hash: String },
+
+    /// Transitions the connection into the `Download` state governed by the
+    /// [content](crate::content) protocol.
+    Download,
+
+    /// If the game hash is correct, transitions the connection into the `Play` state and
+    /// transparently forwards packets.
+    Play { game_hash: blake3::Hash },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CbServerList1 {
+    pub motd: String,
+    pub icon_png: Vec<u8>,
+    pub content_server: Option<String>,
+    pub game_hash: blake3::Hash,
 }

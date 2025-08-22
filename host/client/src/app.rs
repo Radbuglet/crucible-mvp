@@ -14,7 +14,10 @@ use winit::{
 
 use crate::{
     bindings::{env::EnvBindingsHandle, gfx::GfxBindingsHandle},
-    services::window::{WindowManagerHandle, WindowStateHandle, create_gfx_context},
+    services::{
+        network::NetworkManagerHandle,
+        window::{WindowManagerHandle, WindowStateHandle, create_gfx_context},
+    },
     utils::winit::{FallibleApplicationHandler, run_app_fallible},
 };
 
@@ -30,6 +33,7 @@ struct App {
 #[derive(Debug)]
 struct AppInitState {
     window_mgr: WindowManagerHandle,
+    network_mgr: NetworkManagerHandle,
     env_bindings: EnvBindingsHandle,
     gfx_bindings: GfxBindingsHandle,
     main_window: WindowStateHandle,
@@ -46,6 +50,9 @@ impl FallibleApplicationHandler for App {
         }
 
         block_on(async {
+            // Setup network manager
+            let network_mgr = self.root.add(NetworkManagerHandle::new(w), w);
+
             // Setup graphics
             let window = Arc::new(
                 event_loop.create_window(
@@ -99,6 +106,7 @@ impl FallibleApplicationHandler for App {
 
             self.init = Some(AppInitState {
                 window_mgr: window_mgr.as_weak(),
+                network_mgr,
                 env_bindings,
                 gfx_bindings,
                 main_window,

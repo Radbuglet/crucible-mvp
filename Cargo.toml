@@ -7,6 +7,7 @@ members = [
     "host/client",
     "host/protocol",
     "host/server",
+    "utils/glacee",
     "utils/renderer",
     "utils/wasmall",
     "utils/wasmlink-wasmtime",
@@ -16,7 +17,10 @@ members = [
 [workspace.dependencies]
 crucible = { path = "guest/crucible" }
 crucible-abi = { path = "guest/crucible-abi" }
+crucible-protocol = { path = "host/protocol" }
 crucible-renderer = { path = "utils/renderer" }
+glacee = { path = "utils/glacee" }
+wasmall = { path = "utils/wasmall" }
 wasmlink = { path = "utils/wasmlink" }
 wasmlink-wasmtime = { path = "utils/wasmlink-wasmtime" }
 
@@ -27,6 +31,14 @@ rev = "8f35a74e1ac22445848a40747583ab2b29aeec5a"
 [workspace.dependencies.arid-entity]
 git = "https://github.com/Radbuglet/arid.git"
 rev = "8f35a74e1ac22445848a40747583ab2b29aeec5a"
+
+[workspace.dependencies.quinn]
+version = "0.11.8"
+default-features = false
+# Use `aws-lc-rs` because that's what `librice` favors.
+#  We don't use the `platform-verifier` feature directly because we instantiate the
+#  `rustls-platform-verifier` verifier directly.
+features = ["bloom", "log", "runtime-tokio", "rustls-aws-lc-rs"]
 
 [profile.dev.package."*"]
 opt-level = 2
