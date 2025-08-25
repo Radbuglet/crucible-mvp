@@ -4,6 +4,9 @@ run: build
 build:
     cargo rustc -p demo-game --target wasm32-unknown-unknown -- -C link-args="--emit-relocs"
 
+server:
+    cargo run -p crucible-server
+
 roundtrip: build
     mkdir -p private/
     cargo run -p wasmall --bin roundtrip -- target/wasm32-unknown-unknown/debug/demo-game.wasm > private/one.wasm

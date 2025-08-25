@@ -14,6 +14,7 @@
 //!    the login process is complete, the sockets simply send over whatever the game binary wants to
 //!    send with appropriate framing and heartbeats.
 
+pub mod codec;
 pub mod content;
 pub mod game;
 pub mod party;

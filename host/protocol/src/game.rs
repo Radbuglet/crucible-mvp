@@ -24,8 +24,16 @@ pub enum SbHello1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CbServerList1 {
+    /// A message-of-the-day to display alongside the server listing.
     pub motd: String,
+
+    /// A png-formatted icon for the server.
     pub icon_png: Vec<u8>,
+
+    /// The dedicated content server from which the game's blob will be downloaded. `None` if the
+    /// client should download the game from the server directly.
     pub content_server: Option<String>,
+
+    /// The hash of the game's blob.
     pub game_hash: blake3::Hash,
 }

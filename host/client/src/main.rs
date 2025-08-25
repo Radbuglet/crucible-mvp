@@ -12,7 +12,11 @@ mod utils;
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive(LevelFilter::INFO.into()))
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
         .init();
 
     // By default, `rustls` will automatically select a `CryptoProvider` if either the `aws-lc-rs`

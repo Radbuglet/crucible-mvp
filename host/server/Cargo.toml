@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.99"
+blake3 = { version = "1.8.2", features = ["serde"] }
 crucible-protocol.workspace = true
 quinn.workspace = true
 rcgen = "0.14.3"
