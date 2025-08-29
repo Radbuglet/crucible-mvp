@@ -415,7 +415,7 @@ fn test_cut_sekien_16k_nc_3() {
 }
 
 #[test]
-fn prop_check_gear_state() {
+fn prop_check_gear_state_random() {
     fastrand::seed(5);
 
     let config = GearConfig::new(8192, 16384, 32768);
@@ -424,6 +424,8 @@ fn prop_check_gear_state() {
     let mut buffer = Vec::new();
 
     for _ in 0..config.max_size {
+        buffer.push(fastrand::u8(..));
+
         // `cut_model` only ever updates the hash once it has a pair of bytes available but we
         // process the stream byte-by-byte.
         if buffer
@@ -438,7 +440,34 @@ fn prop_check_gear_state() {
             cut_model(&config, tables, &buffer),
             cut_impl(&config, tables, &buffer),
         );
+    }
+}
 
-        buffer.push(fastrand::u8(..));
+#[test]
+fn prop_check_gear_state_zeroes() {
+    fastrand::seed(5);
+
+    let config = GearConfig::new(8192, 16384, 32768);
+    let tables = GearTablesRef::new();
+
+    let mut buffer = Vec::new();
+
+    for _ in 0..config.max_size {
+        buffer.push(0u8);
+
+        // `cut_model` only ever updates the hash once it has a pair of bytes available but we
+        // process the stream byte-by-byte.
+        if buffer
+            .len()
+            .checked_sub(config.min_size + 1)
+            .is_some_and(|v| v % 2 == 0)
+        {
+            continue;
+        }
+
+        assert_eq!(
+            cut_model(&config, tables, &buffer),
+            cut_impl(&config, tables, &buffer),
+        );
     }
 }

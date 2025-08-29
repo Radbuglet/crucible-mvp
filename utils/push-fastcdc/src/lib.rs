@@ -411,7 +411,7 @@ impl GearState {
 
         // Update the hash.
         if self.len <= avg_size {
-            if self.len - min_size % 2 == 1 {
+            if (self.len - min_size) % 2 == 1 {
                 self.hash = (self.hash << 2).wrapping_add(gear_ls[value as usize]);
 
                 if (self.hash & mask_s_ls) == 0 {
@@ -427,7 +427,7 @@ impl GearState {
 
             None
         } else if self.len <= max_size {
-            if self.len - avg_size % 2 == 1 {
+            if (self.len - avg_size) % 2 == 1 {
                 self.hash = (self.hash << 2).wrapping_add(gear_ls[value as usize]);
 
                 if (self.hash & mask_l_ls) == 0 {
@@ -459,7 +459,7 @@ impl GearState {
             .enumerate()
             .filter_map(|(idx, &value)| {
                 self.push_byte(config, tables, value)
-                    .map(|state| (idx + 1, state))
+                    .map(|state| (idx, state))
             })
             .next()
     }
