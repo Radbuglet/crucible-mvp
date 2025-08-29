@@ -27,11 +27,42 @@ fn cut_model(config: &GearConfig, tables: GearTablesRef, source: &[u8]) -> (u64,
 }
 
 fn cut_impl(config: &GearConfig, tables: GearTablesRef, source: &[u8]) -> (u64, usize) {
+    // `cut_model` only ever updates the hash once it has a pair of bytes available but we
+    // process the stream byte-by-byte. To work around this, we truncate the `source` to an even
+    // length from the closest point. We only really need to do this to allow us to reuse test
+    // suites—no other consumer would want behavior like this.
+
+    let should_trim = 'trim: {
+        if let Some(bytes) = source.len().checked_sub(config.avg_size) {
+            break 'trim bytes % 2 == 1;
+        }
+
+        if let Some(bytes) = source.len().checked_sub(config.min_size) {
+            break 'trim bytes % 2 == 1;
+        }
+
+        false
+    };
+
+    let source = if should_trim {
+        &source[..(source.len() - 1)]
+    } else {
+        source
+    };
+
     let mut state = GearState::default();
-    state.push(config, tables, source).map_or(
-        (state.hash, source.len()),
-        |(count, GearState { hash, .. })| (hash, count),
-    )
+
+    match state.push(config, tables, source) {
+        Some((count, GearState { hash, .. })) => (hash, count),
+        None => (
+            state.hash,
+            if should_trim {
+                source.len() + 1
+            } else {
+                source.len()
+            },
+        ),
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -226,8 +257,8 @@ fn test_cut_sekien_16k_chunks() {
     ];
     for (e_hash, e_length) in expected.iter() {
         let (hash, pos) = chunker.cut(cursor, remaining);
-        assert_eq!(hash, *e_hash);
         assert_eq!(pos, cursor + e_length);
+        assert_eq!(hash, *e_hash);
         cursor = pos;
         remaining -= e_length;
     }
@@ -253,8 +284,8 @@ fn test_cut_sekien_16k_chunks_seed_666() {
     ];
     for (e_hash, e_length) in expected.iter() {
         let (hash, pos) = chunker.cut(cursor, remaining);
-        assert_eq!(hash, *e_hash);
         assert_eq!(pos, cursor + e_length);
+        assert_eq!(hash, *e_hash);
         cursor = pos;
         remaining -= e_length;
     }
@@ -273,8 +304,8 @@ fn test_cut_sekien_32k_chunks() {
         vec![(15733367461443853673, 66549), (6321136627705800457, 42917)];
     for (e_hash, e_length) in expected.iter() {
         let (hash, pos) = chunker.cut(cursor, remaining);
-        assert_eq!(hash, *e_hash);
         assert_eq!(pos, cursor + e_length);
+        assert_eq!(hash, *e_hash);
         cursor = pos;
         remaining -= e_length;
     }
@@ -292,8 +323,8 @@ fn test_cut_sekien_64k_chunks() {
     let expected: Vec<(u64, usize)> = vec![(2504464741100432583, 109466)];
     for (e_hash, e_length) in expected.iter() {
         let (hash, pos) = chunker.cut(cursor, remaining);
-        assert_eq!(hash, *e_hash);
         assert_eq!(pos, cursor + e_length);
+        assert_eq!(hash, *e_hash);
         cursor = pos;
         remaining -= e_length;
     }
@@ -380,8 +411,9 @@ fn test_cut_sekien_16k_nc_0() {
     ];
     for (e_hash, e_length) in expected.iter() {
         let (hash, pos) = chunker.cut(cursor, remaining);
-        assert_eq!(hash, *e_hash);
+        dbg!(e_length, remaining);
         assert_eq!(pos, cursor + e_length);
+        assert_eq!(hash, *e_hash);
         cursor = pos;
         remaining -= e_length;
     }
@@ -406,8 +438,8 @@ fn test_cut_sekien_16k_nc_3() {
     ];
     for (e_hash, e_length) in expected.iter() {
         let (hash, pos) = chunker.cut(cursor, remaining);
-        assert_eq!(hash, *e_hash);
         assert_eq!(pos, cursor + e_length);
+        assert_eq!(hash, *e_hash);
         cursor = pos;
         remaining -= e_length;
     }
@@ -425,16 +457,6 @@ fn prop_check_gear_state_random() {
 
     for _ in 0..config.max_size {
         buffer.push(fastrand::u8(..));
-
-        // `cut_model` only ever updates the hash once it has a pair of bytes available but we
-        // process the stream byte-by-byte.
-        if buffer
-            .len()
-            .checked_sub(config.min_size + 1)
-            .is_some_and(|v| v % 2 == 0)
-        {
-            continue;
-        }
 
         assert_eq!(
             cut_model(&config, tables, &buffer),
@@ -454,16 +476,6 @@ fn prop_check_gear_state_zeroes() {
 
     for _ in 0..config.max_size {
         buffer.push(0u8);
-
-        // `cut_model` only ever updates the hash once it has a pair of bytes available but we
-        // process the stream byte-by-byte.
-        if buffer
-            .len()
-            .checked_sub(config.min_size + 1)
-            .is_some_and(|v| v % 2 == 0)
-        {
-            continue;
-        }
 
         assert_eq!(
             cut_model(&config, tables, &buffer),
