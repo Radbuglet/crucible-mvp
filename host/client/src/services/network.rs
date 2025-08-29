@@ -8,7 +8,6 @@ use crucible_protocol::{
     game,
 };
 use quinn::{
-    VarInt,
     crypto::rustls::QuicClientConfig,
     rustls::{
         self, DigitallySignedStruct, RootCertStore, SignatureScheme,
@@ -173,7 +172,7 @@ async fn run_worker(cert_mode: CertValidationMode) -> anyhow::Result<()> {
 
     dbg!(msg);
 
-    conn.close(VarInt::from_u32(0), b"");
+    // We were the last peer to receive data so we can drop the socket immediately.
 
     Ok(())
 }

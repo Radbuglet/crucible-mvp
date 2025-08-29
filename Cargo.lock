@@ -1240,6 +1240,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastcdc"
+version = "3.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf51ceb43e96afbfe4dd5c6f6082af5dfd60e220820b8123792d61963f2ce6bc"
+
+[[package]]
+name = "fastrand"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+
+[[package]]
 name = "fdeflate"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2959,6 +2971,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "push-fastcdc"
+version = "0.1.0"
+dependencies = [
+ "fastcdc",
+ "fastrand",
+ "md-5",
+]
+
+[[package]]
 name = "qoi"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4415,6 +4436,13 @@ dependencies = [
  "leb128",
  "rustc-hash 1.1.0",
  "wasmparser 0.121.2",
+]
+
+[[package]]
+name = "wasmall-new"
+version = "0.1.0"
+dependencies = [
+ "smallvec",
 ]
 
 [[package]]

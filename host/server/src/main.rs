@@ -6,7 +6,6 @@ use crucible_protocol::{
     game,
 };
 use quinn::{
-    VarInt,
     crypto::rustls::QuicServerConfig,
     rustls::{self, pki_types::PrivatePkcs8KeyDer},
 };
@@ -105,6 +104,12 @@ async fn process_conn(conn: quinn::Incoming) -> anyhow::Result<()> {
             )
             .await?;
 
+            // Only the last peer receiving data can be sure that it received the entire packet.
+            // Hence, we have to wait for the peer to either time-out or tell us that they
+            // disconnected.
+            // TODO: Is there a better way to handle this? Should we close streams instead?
+            conn.closed().await;
+
             tracing::info!("Sent server list!");
         }
         game::SbHello1::Download => {
@@ -114,12 +119,6 @@ async fn process_conn(conn: quinn::Incoming) -> anyhow::Result<()> {
             tracing::info!("Client wants to play game with hash {game_hash:?}");
         }
     }
-
-    // TODO: This waits until the peer sends us the close packet or the peer times out. A
-    //  malicious peer could spam packets at us because we don't receive them anymore and, although
-    //  they'd eventually time-out, I'm worried that clients can use more memory than we may
-    //  otherwise expect.
-    conn.closed().await;
 
     tracing::info!("Connection closed");
 

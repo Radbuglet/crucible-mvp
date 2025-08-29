@@ -12,6 +12,8 @@ members = [
     "utils/wasmall",
     "utils/wasmlink-wasmtime",
     "utils/wasmlink",
+    "utils/wasmall-new",
+    "utils/push-fastcdc",
 ]
 
 [workspace.dependencies]
@@ -19,8 +21,6 @@ crucible = { path = "guest/crucible" }
 crucible-abi = { path = "guest/crucible-abi" }
 crucible-protocol = { path = "host/protocol" }
 crucible-renderer = { path = "utils/renderer" }
-glacee = { path = "utils/glacee" }
-wasmall = { path = "utils/wasmall" }
 wasmlink = { path = "utils/wasmlink" }
 wasmlink-wasmtime = { path = "utils/wasmlink-wasmtime" }
 
