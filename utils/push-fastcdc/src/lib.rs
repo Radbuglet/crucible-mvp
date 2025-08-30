@@ -384,12 +384,109 @@ impl GearState {
     }
 
     #[must_use]
-    pub fn push_byte(
+    pub fn push(
         &mut self,
         config: &GearConfig,
         tables: GearTablesRef<'_>,
-        value: u8,
-    ) -> Option<GearState> {
+        remaining: &[u8],
+    ) -> Option<(usize, GearState)> {
+        #[expect(clippy::type_complexity)]
+        fn process_regimes(
+            me: &mut GearState,
+            mut remaining: &[u8],
+            regimes: &mut [(
+                usize,
+                &mut dyn FnMut(&mut u64, usize, &[u8]) -> Option<usize>,
+            )],
+        ) -> Option<(usize, GearState)> {
+            let full_len = remaining.len();
+
+            let mut regime_min_len = 0;
+
+            for (regime_max_len, regime_process) in regimes {
+                let regime_max_len = *regime_max_len;
+                let regime_min_len = mem::replace(&mut regime_min_len, regime_max_len);
+
+                if remaining.is_empty() {
+                    // Cannot make cuts on an empty slice.
+                    return None;
+                }
+
+                if me.len >= regime_max_len {
+                    // We're past this regime.
+                    continue;
+                }
+
+                // Determine where the first byte of the slice lies relative to the regime's
+                // absolute start.
+                let offset = me.len - regime_min_len;
+
+                // Determine how much of the slice fits within the regime.
+                let slice_len = (regime_max_len - me.len).min(remaining.len());
+
+                // Allow the regime to make a cut.
+                match regime_process(&mut me.hash, offset, &remaining[..slice_len]) {
+                    Some(cut_off) => {
+                        debug_assert!(cut_off <= slice_len);
+
+                        me.len += cut_off;
+                        remaining = &remaining[cut_off..];
+
+                        return Some((full_len - remaining.len(), me.reset()));
+                    }
+                    None => {
+                        me.len += slice_len;
+                        remaining = &remaining[slice_len..];
+                    }
+                }
+            }
+
+            Some((full_len - remaining.len(), me.reset()))
+        }
+
+        fn make_pair_regime_processor(
+            mut cut_one: impl FnMut(&mut u64, u8) -> bool,
+            mut cut_two: impl FnMut(&mut u64, u8) -> bool,
+        ) -> impl FnMut(&mut u64, usize, &[u8]) -> Option<usize> {
+            move |hash, offset, data| {
+                if offset % 2 == 0 {
+                    // Handle chunked pairs.
+                    for (i, chunk) in data.chunks_exact(2).enumerate() {
+                        if cut_one(hash, chunk[0]) {
+                            return Some(i * 2);
+                        }
+
+                        if cut_two(hash, chunk[1]) {
+                            return Some(i * 2 + 1);
+                        }
+                    }
+
+                    // Handle left-over.
+                    if data.len() % 2 != 0 && cut_one(hash, *data.last().unwrap()) {
+                        return Some(data.len());
+                    }
+                } else {
+                    // Handle chunked pairs.
+                    for (i, chunk) in data.chunks_exact(2).enumerate() {
+                        if cut_two(hash, chunk[0]) {
+                            return Some(i * 2);
+                        }
+
+                        if cut_one(hash, chunk[1]) {
+                            return Some(i * 2 + 1);
+                        }
+                    }
+
+                    // Handle left-over.
+                    if data.len() % 2 != 0 && cut_two(hash, *data.last().unwrap()) {
+                        return Some(data.len());
+                    }
+                }
+
+                None
+            }
+        }
+
         let GearConfig {
             min_size,
             avg_size,
@@ -399,68 +496,43 @@ impl GearState {
             mask_s_ls,
             mask_l_ls,
         } = *config;
-
         let GearTablesRef { gear, gear_ls } = tables;
 
-        self.len += 1;
-
-        // Ignore bytes below `min_size`.
-        if self.len <= min_size {
-            return None;
-        }
-
-        // Update the hash.
-        if self.len <= avg_size {
-            if (self.len - min_size) % 2 == 1 {
-                self.hash = (self.hash << 2).wrapping_add(gear_ls[value as usize]);
-
-                if (self.hash & mask_s_ls) == 0 {
-                    return Some(self.reset());
-                }
-            } else {
-                self.hash = self.hash.wrapping_add(gear[value as usize]);
-
-                if (self.hash & mask_s) == 0 {
-                    return Some(self.reset());
-                }
-            }
-
-            None
-        } else if self.len <= max_size {
-            if (self.len - avg_size) % 2 == 1 {
-                self.hash = (self.hash << 2).wrapping_add(gear_ls[value as usize]);
-
-                if (self.hash & mask_l_ls) == 0 {
-                    return Some(self.reset());
-                }
-            } else {
-                self.hash = self.hash.wrapping_add(gear[value as usize]);
-
-                if (self.hash & mask_l) == 0 {
-                    return Some(self.reset());
-                }
-            }
-
-            None
-        } else {
-            Some(self.reset())
-        }
-    }
-
-    #[must_use]
-    pub fn push(
-        &mut self,
-        config: &GearConfig,
-        tables: GearTablesRef<'_>,
-        value: &[u8],
-    ) -> Option<(usize, GearState)> {
-        value
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, &value)| {
-                self.push_byte(config, tables, value)
-                    .map(|state| (idx, state))
-            })
-            .next()
+        process_regimes(
+            self,
+            remaining,
+            &mut [
+                (min_size, &mut |_hash, _offset, _data| {
+                    // Never cut in this region—just consume its data.
+                    None
+                }),
+                (
+                    avg_size,
+                    &mut make_pair_regime_processor(
+                        |hash, value| {
+                            *hash = (*hash << 2).wrapping_add(gear_ls[value as usize]);
+                            (*hash & mask_s_ls) == 0
+                        },
+                        |hash, value| {
+                            *hash = (*hash).wrapping_add(gear[value as usize]);
+                            (*hash & mask_s) == 0
+                        },
+                    ),
+                ),
+                (
+                    max_size,
+                    &mut make_pair_regime_processor(
+                        |hash, value| {
+                            *hash = (*hash << 2).wrapping_add(gear_ls[value as usize]);
+                            (*hash & mask_l_ls) == 0
+                        },
+                        |hash, value| {
+                            *hash = (*hash).wrapping_add(gear[value as usize]);
+                            (*hash & mask_l) == 0
+                        },
+                    ),
+                ),
+            ],
+        )
     }
 }
