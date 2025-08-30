@@ -389,16 +389,19 @@ impl GearState {
         config: &GearConfig,
         tables: GearTablesRef<'_>,
         remaining: &[u8],
-    ) -> Option<(usize, GearState)> {
+    ) -> (usize, Option<GearState>) {
         #[expect(clippy::type_complexity)]
         fn process_regimes(
             me: &mut GearState,
             mut remaining: &[u8],
             regimes: &mut [(
+                // The regime's exclusive upper bound.
                 usize,
+                // Takes the `hash`, the offset of the view within the regime, and the set of values
+                // to write, and returns the number of bytes consumed.
                 &mut dyn FnMut(&mut u64, usize, &[u8]) -> Option<usize>,
             )],
-        ) -> Option<(usize, GearState)> {
+        ) -> (usize, Option<GearState>) {
             let full_len = remaining.len();
 
             let mut regime_min_len = 0;
@@ -409,7 +412,7 @@ impl GearState {
 
                 if remaining.is_empty() {
                     // Cannot make cuts on an empty slice.
-                    return None;
+                    return (full_len - remaining.len(), None);
                 }
 
                 if me.len >= regime_max_len {
@@ -426,13 +429,13 @@ impl GearState {
 
                 // Allow the regime to make a cut.
                 match regime_process(&mut me.hash, offset, &remaining[..slice_len]) {
-                    Some(cut_off) => {
-                        debug_assert!(cut_off <= slice_len);
+                    Some(cut_len) => {
+                        debug_assert!(cut_len <= slice_len);
 
-                        me.len += cut_off;
-                        remaining = &remaining[cut_off..];
+                        me.len += cut_len;
+                        remaining = &remaining[cut_len..];
 
-                        return Some((full_len - remaining.len(), me.reset()));
+                        return (full_len - remaining.len(), Some(me.reset()));
                     }
                     None => {
                         me.len += slice_len;
@@ -441,7 +444,7 @@ impl GearState {
                 }
             }
 
-            Some((full_len - remaining.len(), me.reset()))
+            (full_len - remaining.len(), Some(me.reset()))
         }
 
         fn make_pair_regime_processor(
@@ -453,11 +456,11 @@ impl GearState {
                     // Handle chunked pairs.
                     for (i, chunk) in data.chunks_exact(2).enumerate() {
                         if cut_one(hash, chunk[0]) {
-                            return Some(i * 2);
+                            return Some(i * 2 + 1);
                         }
 
                         if cut_two(hash, chunk[1]) {
-                            return Some(i * 2 + 1);
+                            return Some(i * 2 + 2);
                         }
                     }
 
@@ -469,11 +472,11 @@ impl GearState {
                     // Handle chunked pairs.
                     for (i, chunk) in data.chunks_exact(2).enumerate() {
                         if cut_two(hash, chunk[0]) {
-                            return Some(i * 2);
+                            return Some(i * 2 + 1);
                         }
 
                         if cut_one(hash, chunk[1]) {
-                            return Some(i * 2 + 1);
+                            return Some(i * 2 + 2);
                         }
                     }
 

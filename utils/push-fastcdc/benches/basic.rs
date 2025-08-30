@@ -25,14 +25,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             let mut remaining = read_result.as_slice();
 
             while !remaining.is_empty() {
-                match state.push(&config, tables, remaining) {
-                    Some((read, GearState { .. })) => {
-                        remaining = &remaining[read..];
-                    }
-                    None => {
-                        break;
-                    }
-                }
+                let (read, _) = state.push(&config, tables, remaining);
+                remaining = &remaining[read..];
             }
         });
     });
