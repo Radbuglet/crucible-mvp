@@ -407,11 +407,13 @@ impl GearState {
             let mut regime_min_len = 0;
 
             for (regime_max_len, regime_process) in regimes {
+                // This regime concerns bytes in `[regime_min_len, regime_max_len)`
                 let regime_max_len = *regime_max_len;
                 let regime_min_len = mem::replace(&mut regime_min_len, regime_max_len);
 
                 if remaining.is_empty() {
-                    // Cannot make cuts on an empty slice.
+                    // There's nothing left for us to cut. Consume the entire slice but don't report
+                    // a cut yet.
                     return (full_len - remaining.len(), None);
                 }
 
@@ -441,6 +443,11 @@ impl GearState {
                         me.len += slice_len;
                         remaining = &remaining[slice_len..];
                     }
+                }
+
+                if me.len < regime_max_len {
+                    // We're still in this regime.
+                    return (full_len - remaining.len(), None);
                 }
             }
 
