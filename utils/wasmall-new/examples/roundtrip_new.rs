@@ -1,3 +1,5 @@
+use std::io::Write as _;
+
 use anyhow::Context;
 use wasmall_new::{
     encode::{SplitModuleArgs, split_module},
@@ -39,7 +41,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    assert_eq!(code, out);
+    std::io::stdout().write_all(&out)?;
 
     Ok(())
 }

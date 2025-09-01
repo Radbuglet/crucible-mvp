@@ -331,7 +331,7 @@ impl<'a> ByteCursor<'a> {
 
     pub fn read_var_u64(&mut self) -> anyhow::Result<u64> {
         let mut reader = self.0.limit_len(10);
-        let start_len = self.0.len();
+        let start_len = reader.len();
 
         match leb128::read::unsigned(&mut reader) {
             Ok(v) => {
@@ -354,7 +354,7 @@ impl<'a> ByteCursor<'a> {
 
     pub fn read_var_i64(&mut self) -> anyhow::Result<i64> {
         let mut reader = self.0.limit_len(10);
-        let start_len = self.0.len();
+        let start_len = reader.len();
 
         match leb128::read::signed(&mut reader) {
             Ok(v) => {
