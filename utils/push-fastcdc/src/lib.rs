@@ -286,11 +286,18 @@ pub struct GearConfig {
 }
 
 impl GearConfig {
-    pub fn new(min_size: u32, avg_size: u32, max_size: u32) -> Self {
+    pub const STANDARD: Self = GearConfig::new(8192, 16384, 32768);
+
+    pub const fn new(min_size: u32, avg_size: u32, max_size: u32) -> Self {
         Self::with_level(min_size, avg_size, max_size, Normalization::Level1)
     }
 
-    pub fn with_level(min_size: u32, avg_size: u32, max_size: u32, level: Normalization) -> Self {
+    pub const fn with_level(
+        min_size: u32,
+        avg_size: u32,
+        max_size: u32,
+        level: Normalization,
+    ) -> Self {
         assert!(min_size >= MINIMUM_MIN);
         assert!(min_size <= MINIMUM_MAX);
         assert!(avg_size >= AVERAGE_MIN);
@@ -344,7 +351,7 @@ pub enum Normalization {
 }
 
 impl Normalization {
-    pub fn bits(&self) -> u32 {
+    pub const fn bits(&self) -> u32 {
         match self {
             Normalization::Level0 => 0,
             Normalization::Level1 => 1,

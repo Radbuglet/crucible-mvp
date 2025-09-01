@@ -4608,7 +4608,13 @@ dependencies = [
 name = "wasmall-new"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "blake3",
+ "leb128",
+ "push-fastcdc",
+ "rustc-hash 2.1.1",
  "smallvec",
+ "wasmparser 0.238.0",
 ]
 
 [[package]]
@@ -4666,6 +4672,19 @@ dependencies = [
  "bitflags 2.9.1",
  "indexmap",
  "semver",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.238.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0ad4ca2ecb86b79ea410cd970985665de1d05774b7107b214bc5852b1bcbad7"
+dependencies = [
+ "bitflags 2.9.1",
+ "hashbrown",
+ "indexmap",
+ "semver",
+ "serde",
 ]
 
 [[package]]

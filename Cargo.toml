@@ -23,6 +23,7 @@ crucible-protocol = { path = "host/protocol" }
 crucible-renderer = { path = "utils/renderer" }
 wasmlink = { path = "utils/wasmlink" }
 wasmlink-wasmtime = { path = "utils/wasmlink-wasmtime" }
+push-fastcdc = { path = "utils/push-fastcdc" }
 
 [workspace.dependencies.arid]
 git = "https://github.com/Radbuglet/arid.git"

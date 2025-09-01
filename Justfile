@@ -9,10 +9,13 @@ server:
 
 roundtrip: build
     mkdir -p private/
-    cargo run -p wasmall --bin roundtrip -- target/wasm32-unknown-unknown/debug/demo-game.wasm > private/one.wasm
+    cargo run -p wasmall --example roundtrip -- target/wasm32-unknown-unknown/debug/demo-game.wasm > private/one.wasm
     wasm2wat target/wasm32-unknown-unknown/debug/demo-game.wasm > private/two.wat
     wasm2wat private/one.wasm > private/one.wat
     diff private/one.wat private/two.wat > private/diff.txt
+
+roundtrip_new: build
+    cargo run -p wasmall-new --example roundtrip_new -- target/wasm32-unknown-unknown/debug/demo-game.wasm
 
 compare-save-left: build
     mkdir -p private/
@@ -23,4 +26,4 @@ compare-save-right: build
     cp target/wasm32-unknown-unknown/debug/demo-game.wasm private/compare_right.wasm
 
 compare:
-    cargo run -p wasmall --bin compare_sets -- private/compare_left.wasm private/compare_right.wasm
+    cargo run -p wasmall --example compare_sets -- private/compare_left.wasm private/compare_right.wasm
