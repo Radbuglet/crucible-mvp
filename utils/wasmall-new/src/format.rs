@@ -4,10 +4,7 @@ use anyhow::Context as _;
 use blake3::Hash;
 use rustc_hash::FxHashMap;
 
-use crate::utils::{
-    BufWriter, ByteCursor, ByteParse, ByteParseList, LookBackBufWriter, SliceExt as _, VarByteVec,
-    VarU32,
-};
+use crate::utils::{BufWriter, ByteCursor, ByteParse, ByteParseList, LookBackBufWriter, VarI64};
 
 // === Common === //
 
@@ -27,7 +24,13 @@ pub struct LocalReloc {
 
 impl LocalReloc {
     pub fn write(&self, out: &mut impl BufWriter) {
-        todo!()
+        out.write_var_u32(self.index as u32);
+        out.write_var_u32(self.offset as u32);
+        out.write_u8(self.category as u8 | ((self.addend.is_some() as u8) << 7));
+
+        if let Some(addend) = self.addend {
+            out.write_var_i64(addend);
+        }
     }
 }
 
@@ -35,7 +38,24 @@ impl ByteParse<'_> for LocalReloc {
     type Out = Self;
 
     fn parse_naked(buf: &mut ByteCursor<'_>) -> anyhow::Result<Self::Out> {
-        todo!()
+        let index = buf.read_var_u32().context("failed to read index")?;
+        let offset = buf.read_var_u32().context("failed to read offset")?;
+        let category_and_has_addend = buf.read_u8().context("failed to read category")?;
+        let category = category_and_has_addend & !(1 << 7);
+        let category = RelocCategory::from_byte(category)?;
+        let has_addend = category_and_has_addend & (1 << 7) != 0;
+        let addend = if has_addend {
+            Some(buf.read_var_i64()?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            index: index as usize,
+            offset: offset as usize,
+            category,
+            addend,
+        })
     }
 }
 
@@ -173,6 +193,16 @@ impl<'a> ByteParse<'a> for WasmallIndex<'a> {
     type Out = Self;
 
     fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
+        // Check magic.
+        anyhow::ensure!(
+            buf.read_u64().context("failed to read magic number")? == INDEX_MAGIC_NUMBER,
+            "invalid magic number"
+        );
+
+        // Check version.
+        let ver = buf.read_var_u32()?;
+        anyhow::ensure!(ver == INDEX_VERSION_NUMBER, "mismatched version number");
+
         Ok(Self { chunks: buf.0 })
     }
 }
@@ -193,12 +223,18 @@ impl<'a> ByteParse<'a> for WasmallModChunk<'a> {
     type Out = Self;
 
     fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
-        Ok(
-            match buf.lookahead_annotated("module kind", |c| ChunkKind::from_byte(c.read_u8()?))? {
-                ChunkKind::Verbatim => Self::Verbatim(WasmallModSegVerbatim::parse(buf)?),
-                ChunkKind::Blob => Self::Blob(WasmallModSegBlob::parse(buf)?),
-            },
-        )
+        buf.lookahead_annotated("chunk", |c| {
+            let kind = ChunkKind::from_byte(c.read_u8()?)?;
+            let len = c.read_u32()?;
+            let data = c.consume(len as usize)?;
+
+            Ok(match kind {
+                ChunkKind::Verbatim => {
+                    Self::Verbatim(WasmallModSegVerbatim::parse(&mut ByteCursor(data))?)
+                }
+                ChunkKind::Blob => Self::Blob(WasmallModSegBlob::parse(&mut ByteCursor(data))?),
+            })
+        })
     }
 }
 
@@ -211,9 +247,7 @@ impl<'a> ByteParse<'a> for WasmallModSegVerbatim<'a> {
     type Out = Self;
 
     fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
-        Ok(WasmallModSegVerbatim {
-            data: VarByteVec::parse(buf).context("failed to read verbatim segment data")?,
-        })
+        Ok(WasmallModSegVerbatim { data: buf.0 })
     }
 }
 
@@ -225,7 +259,7 @@ impl<'a> WasmallModSegVerbatim<'a> {
 
 #[derive(Debug, Clone)]
 pub struct WasmallModSegBlob<'a> {
-    hash: &'a [u8],
+    hash: blake3::Hash,
     reloc_values: &'a [u8],
 }
 
@@ -233,23 +267,21 @@ impl<'a> ByteParse<'a> for WasmallModSegBlob<'a> {
     type Out = Self;
 
     fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
-        let hash = buf
-            .consume(blake3::OUT_LEN)
-            .context("failed to read blob hash")?;
+        let hash = blake3::Hash::from_bytes(buf.consume_arr()?);
 
-        let reloc_values =
-            VarByteVec::parse(buf).context("failed to read blob relocation values")?;
-
-        Ok(Self { hash, reloc_values })
+        Ok(Self {
+            hash,
+            reloc_values: buf.0,
+        })
     }
 }
 
 impl<'a> WasmallModSegBlob<'a> {
     pub fn hash(&self) -> Hash {
-        Hash::from_bytes(self.hash.to_array())
+        self.hash
     }
 
-    pub fn reloc_values(&self) -> ByteParseList<'a, VarU32> {
+    pub fn reloc_values(&self) -> ByteParseList<'a, VarI64> {
         ByteParseList::new(ByteCursor(self.reloc_values))
     }
 

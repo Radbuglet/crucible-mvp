@@ -505,36 +505,13 @@ impl<P> Clone for ByteParseList<'_, P> {
 }
 
 #[non_exhaustive]
-pub struct VarU32;
+pub struct VarI64;
 
-impl ByteParse<'_> for VarU32 {
-    type Out = u32;
-
-    fn parse_naked(buf: &mut ByteCursor<'_>) -> anyhow::Result<Self::Out> {
-        buf.read_var_u32()
-    }
-}
-
-#[non_exhaustive]
-pub struct VarI32;
-
-impl ByteParse<'_> for VarI32 {
-    type Out = i32;
+impl ByteParse<'_> for VarI64 {
+    type Out = i64;
 
     fn parse_naked(buf: &mut ByteCursor<'_>) -> anyhow::Result<Self::Out> {
-        buf.read_var_i32()
-    }
-}
-
-#[non_exhaustive]
-pub struct VarByteVec;
-
-impl<'a> ByteParse<'a> for VarByteVec {
-    type Out = &'a [u8];
-
-    fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
-        let len = buf.read_var_u32().context("failed to read length")?;
-        buf.consume(len as usize)
+        buf.read_var_i64()
     }
 }
 

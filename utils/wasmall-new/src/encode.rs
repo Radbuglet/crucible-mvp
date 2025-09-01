@@ -10,7 +10,7 @@ use wasmparser::{
 
 use crate::{
     format::{LocalReloc, RelocCategory, WasmallArchive},
-    utils::{BufWriter, ByteCursor, VecExt as _, len_of},
+    utils::{BufWriter, ByteCursor, VecExt as _},
 };
 
 // === Driver === //
@@ -92,28 +92,6 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
                     sink.extend_from_slice(&src[range.clone()]);
                 });
             }
-            Payload::CustomSection(cs) => {
-                // Truncate out relocations because they're no longer needed.
-                if (cs.name() == "linking" || cs.name() == "reloc.") && truncate_relocations {
-                    bytes_truncated += cs.data().len();
-                    continue;
-                }
-
-                // Otherwise, write out the section verbatim. Custom sections do not have
-                // relocations.
-                let header_len = len_of(|sink| {
-                    // Section ID
-                    sink.write_u8(0);
-
-                    // Section length
-                    sink.write_var_u32(cs.data().len() as u32);
-                });
-
-                let cs_full_range =
-                    (cs.data_offset() - header_len)..(cs.data_offset() + cs.data().len());
-
-                archive.push_verbatim(|sink| sink.write_bytes(&src[cs_full_range]));
-            }
             Payload::End(_) => {
                 // (nothing to do)
             }
@@ -129,6 +107,16 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
                         _ => unreachable!(),
                     }
                 };
+
+                // Jettison out relocations if asked to do so. We only have options for removing
+                // relocations because all other sections could be removed by tools before us.
+                if let Payload::CustomSection(cs) = payload
+                    && (cs.name() == "linking" || cs.name() == "reloc.")
+                    && truncate_relocations
+                {
+                    bytes_truncated += cs.data().len();
+                    continue;
+                }
 
                 // Write the section header.
                 archive.push_verbatim::<anyhow::Result<_>>(|sink| {
@@ -148,14 +136,22 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
                 // routine to ensure that it can still benefit from content-defined chunking.
 
                 // All real sections except custom sections affect the section index.
-                let section_idx = next_section_idx;
-                next_section_idx += 1;
-
                 let unerased = &src[section_range.clone()];
-                let relocations = relocations
-                    .get(section_idx)
-                    .context("missing relocations for section")?;
-                let relocations = &relocations[..];
+
+                let relocations = if !matches!(payload, Payload::CustomSection(..)) {
+                    let section_idx = next_section_idx;
+                    if !matches!(payload, Payload::CustomSection(..)) {
+                        next_section_idx += 1;
+                    }
+
+                    let relocations = relocations
+                        .get(section_idx)
+                        .context("missing relocations for section")?;
+
+                    &relocations[..]
+                } else {
+                    &[]
+                };
 
                 // Erase the section's relocation data.
                 let erased_vec;
