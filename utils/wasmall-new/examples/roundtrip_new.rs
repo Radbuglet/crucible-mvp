@@ -1,7 +1,7 @@
 use anyhow::Context;
 use wasmall_new::{
     encode::{SplitModuleArgs, split_module},
-    format::WasmallIndex,
+    format::{WasmallBlob, WasmallIndex, WasmallModChunk},
     utils::{ByteCursor, ByteParse as _, OffsetTracker},
 };
 
@@ -10,19 +10,36 @@ fn main() -> anyhow::Result<()> {
     let code = std::fs::read(std::env::args().nth(1).context("missing path")?)?;
     let archive = split_module(SplitModuleArgs {
         src: &code,
-        truncate_relocations: true,
+        truncate_relocations: false,
     })?
     .archive;
 
     dbg!(archive.blob_buf.len(), archive.index_buf.len(), code.len());
 
     // Decompress it.
-    let mut _guard = OffsetTracker::new(&archive.index_buf);
+    let _guard = OffsetTracker::new(&archive.index_buf);
     let reader = WasmallIndex::parse(&mut ByteCursor(&archive.index_buf))?;
+
+    let mut out = Vec::new();
 
     for chunk in reader.chunks() {
         let chunk = chunk?;
+
+        match chunk {
+            WasmallModChunk::Verbatim(chunk) => {
+                out.extend_from_slice(chunk.data());
+            }
+            WasmallModChunk::Blob(chunk) => {
+                let blob = &archive.blob_buf[archive.blobs[&chunk.hash()].clone()];
+
+                let _guard = OffsetTracker::new(blob);
+
+                chunk.write(&WasmallBlob::parse(&mut ByteCursor(blob))?, &mut out)?;
+            }
+        }
     }
+
+    assert_eq!(code, out);
 
     Ok(())
 }

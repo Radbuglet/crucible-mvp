@@ -4,7 +4,9 @@ use anyhow::Context as _;
 use blake3::Hash;
 use rustc_hash::FxHashMap;
 
-use crate::utils::{BufWriter, ByteCursor, ByteParse, ByteParseList, LookBackBufWriter, VarI64};
+use crate::utils::{
+    BufRewriter, BufWriter, ByteCursor, ByteParse, ByteParseList, LookBackBufWriter, VarI64,
+};
 
 // === Common === //
 
@@ -75,6 +77,15 @@ impl RelocCategory {
             2 => Ok(Self::Var32),
             3 => Ok(Self::Var64),
             _ => Err(anyhow::anyhow!("unknown segment kind {v}")),
+        }
+    }
+
+    pub fn length(self) -> usize {
+        match self {
+            RelocCategory::Fixed32 => 4,
+            RelocCategory::Fixed64 => 8,
+            RelocCategory::Var32 => 5,
+            RelocCategory::Var64 => 10,
         }
     }
 }
@@ -260,7 +271,7 @@ impl<'a> WasmallModSegVerbatim<'a> {
 #[derive(Debug, Clone)]
 pub struct WasmallModSegBlob<'a> {
     hash: blake3::Hash,
-    reloc_values: &'a [u8],
+    symbols: &'a [u8],
 }
 
 impl<'a> ByteParse<'a> for WasmallModSegBlob<'a> {
@@ -271,7 +282,7 @@ impl<'a> ByteParse<'a> for WasmallModSegBlob<'a> {
 
         Ok(Self {
             hash,
-            reloc_values: buf.0,
+            symbols: buf.0,
         })
     }
 }
@@ -281,12 +292,57 @@ impl<'a> WasmallModSegBlob<'a> {
         self.hash
     }
 
-    pub fn reloc_values(&self) -> ByteParseList<'a, VarI64> {
-        ByteParseList::new(ByteCursor(self.reloc_values))
+    pub fn symbols(&self) -> ByteParseList<'a, VarI64> {
+        ByteParseList::new(ByteCursor(self.symbols))
     }
 
     pub fn write(&self, blob: &WasmallBlob<'_>, out: &mut Vec<u8>) -> anyhow::Result<()> {
-        todo!()
+        // Collect symbols
+        let mut symbols = Vec::new();
+
+        for symbol in self.symbols() {
+            symbols.push(symbol?);
+        }
+
+        // Copy out erased version of blob.
+        let start = out.len();
+        out.extend_from_slice(blob.data());
+
+        let out_range = &mut out[start..];
+
+        // Apply relocations.
+        for reloc in blob.relocations() {
+            let reloc = reloc?;
+
+            let out_range = out_range
+                .get_mut(reloc.offset..(reloc.offset + reloc.category.length()))
+                .context("relocation range is not within blob")?;
+
+            let mut out_range = BufRewriter(out_range);
+
+            let value = *symbols
+                .get(reloc.index)
+                .context("relocation symbol not given value")?;
+
+            let addend = reloc.addend.unwrap_or(0);
+
+            match reloc.category {
+                RelocCategory::Fixed32 => {
+                    out_range.write_u32((value as u32).wrapping_add(addend as u32));
+                }
+                RelocCategory::Fixed64 => {
+                    out_range.write_u64((value as u64).wrapping_add(addend as u64));
+                }
+                RelocCategory::Var32 => {
+                    out_range.write_var_u32_full((value as u32).wrapping_add(addend as u32));
+                }
+                RelocCategory::Var64 => {
+                    out_range.write_var_u64_full((value as u64).wrapping_add(addend as u64));
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -301,21 +357,11 @@ impl<'a> ByteParse<'a> for WasmallBlob<'a> {
     type Out = Self;
 
     fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
-        let relocation_count = buf
-            .read_var_u32()
-            .context("failed to read relocation count")?;
+        anyhow::ensure!(buf.read_u64()? == BLOB_MAGIC_NUMBER);
+        anyhow::ensure!(buf.read_var_u32()? == BLOB_VERSION_NUMBER);
 
-        let relocations = buf.lookahead_annotated("relocation list", |c| {
-            c.get_slice_read(|c| {
-                for _ in 0..relocation_count {
-                    LocalReloc::parse(c)?;
-                }
-
-                Ok(())
-            })
-            .map(|(_, r)| r)
-        })?;
-
+        let relocations = buf.read_u32()?;
+        let relocations = buf.consume(relocations as usize)?;
         let data = buf.0;
 
         Ok(Self { relocations, data })

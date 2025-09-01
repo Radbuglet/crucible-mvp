@@ -10,8 +10,6 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
-use anyhow::Context;
-
 // === ExtensionFor === //
 
 mod extension_for {
@@ -112,7 +110,7 @@ impl OffsetTracker<'_> {
 
         // See if we're about to collide into the start of the next range.
         if let Some((&closest_start, _)) = slices.range(range.start..).next() {
-            // ibid
+            // Same as above.
             assert!(range.end <= closest_start);
         }
 
@@ -622,11 +620,14 @@ pub trait LookBackBufWriter: BufWriter {
     }
 
     fn write_sectioned<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        let start = self.write_len();
+        let header = self.write_len();
         self.write_u32(0xABADF00D);
+
+        let start = self.write_len();
         let res = f(self);
         let len = self.write_len() - start;
-        BufRewriter(&mut self.written_mut()[start..]).write_u32(len as u32);
+
+        BufRewriter(&mut self.written_mut()[header..]).write_u32(len as u32);
         res
     }
 }
