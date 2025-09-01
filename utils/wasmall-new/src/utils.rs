@@ -541,56 +541,52 @@ impl<'a> ByteParse<'a> for VarByteVec {
 // === Writing === //
 
 pub trait BufWriter {
-    fn push(&mut self, v: u8) {
-        self.extend(&[v]);
+    fn write_u8(&mut self, v: u8) {
+        self.write_bytes(&[v]);
     }
 
-    fn extend(&mut self, v: &[u8]);
+    fn write_bytes(&mut self, v: &[u8]);
 }
 
 impl BufWriter for Vec<u8> {
-    fn push(&mut self, v: u8) {
+    fn write_u8(&mut self, v: u8) {
         self.push(v)
     }
 
-    fn extend(&mut self, v: &[u8]) {
+    fn write_bytes(&mut self, v: &[u8]) {
         self.extend_from_slice(v)
     }
 }
 
 pub trait Leb128WriteExt: BufWriter {
-    fn write_u8(&mut self, v: u8) {
-        self.extend(&[v]);
-    }
-
     fn write_u32(&mut self, v: u32) {
-        self.extend(&v.to_le_bytes());
+        self.write_bytes(&v.to_le_bytes());
     }
 
     fn write_i32(&mut self, v: i32) {
-        self.extend(&v.to_le_bytes());
+        self.write_bytes(&v.to_le_bytes());
     }
 
     fn write_u64(&mut self, v: u64) {
-        self.extend(&v.to_le_bytes());
+        self.write_bytes(&v.to_le_bytes());
     }
 
     fn write_i64(&mut self, v: i64) {
-        self.extend(&v.to_le_bytes());
+        self.write_bytes(&v.to_le_bytes());
     }
 
     fn write_leb_zero_extended(&mut self, data: &mut [u8], width: Option<usize>) {
         if width.is_some_and(|width| data.len() < width) {
             *data.last_mut().unwrap() |= 0x80;
-            self.extend(data);
+            self.write_bytes(data);
 
             let extra = width.unwrap() - data.len();
 
             for i in 1..=extra {
-                self.push(if i == extra { 0 } else { 0x80 });
+                self.write_u8(if i == extra { 0 } else { 0x80 });
             }
         } else {
-            self.extend(data);
+            self.write_bytes(data);
         }
     }
 
@@ -657,7 +653,7 @@ impl<E: ?Sized + BufWriter> Leb128WriteExt for E {}
 pub struct LenCounter(pub usize);
 
 impl BufWriter for LenCounter {
-    fn extend(&mut self, v: &[u8]) {
+    fn write_bytes(&mut self, v: &[u8]) {
         self.0 += v.len();
     }
 }

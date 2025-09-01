@@ -10,7 +10,7 @@ use wasmparser::{
 
 use crate::{
     format::{LocalReloc, RelocCategory, WasmallArchive, WasmallWriter},
-    utils::{ByteCursor, Leb128WriteExt as _, VecExt as _},
+    utils::{BufWriter, ByteCursor, Leb128WriteExt as _, VecExt as _, len_of},
 };
 
 // === Driver === //
@@ -45,8 +45,7 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
     };
 
     // Maps sections to a list of their relocations.
-    let mut reloc_map = <Vec<Vec<RelocationEntry>>>::new();
-
+    let mut relocations = <Vec<Vec<RelocationEntry>>>::new();
     let mut has_linking_section = false;
 
     for payload in &payloads {
@@ -62,7 +61,7 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
                     payload.data(),
                     payload.data_offset(),
                 ))?;
-                let out_vec = reloc_map.ensure_index(relocs.section_index() as usize);
+                let out_vec = relocations.ensure_index(relocs.section_index() as usize);
 
                 for reloc in relocs.entries() {
                     out_vec.push(reloc?);
@@ -76,13 +75,13 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
         anyhow::bail!("WASM module lacks relocation information");
     }
 
-    for vec in &mut reloc_map {
-        vec.sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
+    for relocations in &mut relocations {
+        relocations.sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
     }
 
     // Produce archive.
     let mut parser = payloads.iter().peekable();
-    let mut section_idx = 0;
+    let mut next_section_idx = 0;
     let mut bytes_truncated = 0;
     let mut writer = WasmallWriter::default();
 
@@ -93,35 +92,49 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
                     sink.extend_from_slice(&src[range.clone()]);
                 });
             }
-            Payload::CodeSectionEntry(..) => {
-                // TODO
+            Payload::CustomSection(cs) => {
+                // Truncate out relocations because they're no longer needed.
+                if (cs.name() == "linking" || cs.name() == "reloc.") && truncate_relocations {
+                    bytes_truncated += cs.data().len();
+                    continue;
+                }
+
+                // Otherwise, write out the section verbatim. Custom sections do not have
+                // relocations.
+                let header_len = len_of(|sink| {
+                    // Section ID
+                    sink.write_u8(0);
+
+                    // Section length
+                    sink.write_var_u32(cs.data().len() as u32);
+                });
+
+                let cs_full_range =
+                    (cs.data_offset() - header_len)..(cs.data_offset() + cs.data().len());
+
+                writer.push_verbatim(|sink| sink.write_bytes(&src[cs_full_range]));
+            }
+            Payload::End(_) => {
+                // (nothing to do)
             }
             payload => {
                 let Some((section_id, section_range)) = payload.as_section() else {
                     match payload {
                         // Processed by another case.
-                        Payload::Version { .. } => unreachable!(),
-
-                        // Processed by another case.
-                        Payload::CodeSectionEntry(..) => unreachable!(),
-
-                        // Nothing to do.
-                        Payload::End(_) => {}
+                        Payload::Version { .. }
+                        | Payload::CodeSectionEntry(..)
+                        | Payload::End(_) => unreachable!(),
 
                         // These are the only virtual payloads the parser can emit.
                         _ => unreachable!(),
                     }
-
-                    continue;
                 };
 
-                // Truncate out relocations because they're no longer needed.
-                if let Payload::CustomSection(cs) = payload
-                    && (cs.name() == "linking" || cs.name() == "reloc.")
-                    && truncate_relocations
-                {
-                    bytes_truncated += section_range.len();
-                    continue;
+                // Skip over `CodeSectionEntry`'s within a `CodeSection`.
+                if let Payload::CodeSectionStart { .. } = payload {
+                    while let Some(Payload::CodeSectionEntry(..)) = parser.peek() {
+                        _ = parser.next();
+                    }
                 }
 
                 // Write the section header.
@@ -137,33 +150,47 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
                     Ok(())
                 })?;
 
-                // Erase the section's relocation data.
+                let section_idx = next_section_idx;
+                next_section_idx += 1;
+
+                // Get section information.
                 let unerased = &src[section_range.clone()];
-                let erased = zeroize_relocations(unerased, &reloc_map[section_idx])?;
+                let Some(relocations) = relocations.get(section_idx).filter(|v| !v.is_empty())
+                else {
+                    // This is a simple section without any relocations.
+                    writer.push_verbatim(|sink| {
+                        sink.write_bytes(unerased);
+                    });
 
-                let cut_ends = split_hinted_cdc(
-                    &erased,
-                    reloc_map[section_idx].iter().map(|v| v.relocation_range()),
-                );
+                    continue;
+                };
+                let relocations = &relocations[..];
 
-                let mut cut_start = 0;
-                let mut relocations = &reloc_map[section_idx][..];
+                // Erase the section's relocation data.
+                let erased = zeroize_relocations(unerased, relocations)?;
+
+                let cut_ends =
+                    split_hinted_cdc(&erased, relocations.iter().map(|v| v.relocation_range()));
+
                 let mut chunks = Vec::new();
 
-                for cut_end in cut_ends {
-                    let cut_start = mem::replace(&mut cut_start, cut_end);
+                {
+                    let mut cut_start = 0;
+                    let mut relocations = relocations;
 
-                    chunks.push(compute_local_relocations(
-                        &unerased[cut_start..cut_end],
-                        cut_start,
-                        &mut relocations,
-                    ));
+                    for cut_end in cut_ends {
+                        let cut_start = mem::replace(&mut cut_start, cut_end);
+
+                        chunks.push(compute_local_relocations(
+                            &unerased[cut_start..cut_end],
+                            cut_start,
+                            &mut relocations,
+                        )?);
+                    }
                 }
-            }
-        }
 
-        if payload.as_section().is_some() {
-            section_idx += 1;
+                // TODO
+            }
         }
     }
 
@@ -310,9 +337,7 @@ pub fn compute_local_relocations(
             }
             RelocCategory::Fixed64 => {
                 let value = ByteCursor(value).read_u64().unwrap();
-                let value = value.wrapping_sub(relocation.addend as u64);
-
-                value as u64
+                value.wrapping_sub(relocation.addend as u64)
             }
             RelocCategory::Var32 => {
                 let value = ByteCursor(value).read_var_u32().unwrap();
@@ -322,9 +347,7 @@ pub fn compute_local_relocations(
             }
             RelocCategory::Var64 => {
                 let value = ByteCursor(value).read_var_u64().unwrap();
-                let value = value.wrapping_sub(relocation.addend as u64);
-
-                value as u64
+                value.wrapping_sub(relocation.addend as u64)
             }
         };
 

@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use anyhow::Context;
 use wasmall_new::{SplitModuleArgs, split_module};
 
