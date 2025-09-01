@@ -1,4 +1,4 @@
-use std::{collections::hash_map, mem, ops::Range};
+use std::{collections::hash_map, iter, mem, ops::Range};
 
 use anyhow::Context;
 use push_fastcdc::{GearConfig, GearState, GearTablesRef};
@@ -9,8 +9,8 @@ use wasmparser::{
 };
 
 use crate::{
-    format::{LocalReloc, RelocCategory, WasmallArchive, WasmallWriter},
-    utils::{BufWriter, ByteCursor, Leb128WriteExt as _, VecExt as _, len_of},
+    format::{LocalReloc, RelocCategory, WasmallArchive},
+    utils::{BufWriter, ByteCursor, VecExt as _, len_of},
 };
 
 // === Driver === //
@@ -83,12 +83,12 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
     let mut parser = payloads.iter().peekable();
     let mut next_section_idx = 0;
     let mut bytes_truncated = 0;
-    let mut writer = WasmallWriter::default();
+    let mut archive = WasmallArchive::default();
 
     while let Some(payload) = parser.next() {
         match payload {
             Payload::Version { range, .. } => {
-                writer.push_verbatim(|sink| {
+                archive.push_verbatim(|sink| {
                     sink.extend_from_slice(&src[range.clone()]);
                 });
             }
@@ -112,7 +112,7 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
                 let cs_full_range =
                     (cs.data_offset() - header_len)..(cs.data_offset() + cs.data().len());
 
-                writer.push_verbatim(|sink| sink.write_bytes(&src[cs_full_range]));
+                archive.push_verbatim(|sink| sink.write_bytes(&src[cs_full_range]));
             }
             Payload::End(_) => {
                 // (nothing to do)
@@ -130,15 +130,8 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
                     }
                 };
 
-                // Skip over `CodeSectionEntry`'s within a `CodeSection`.
-                if let Payload::CodeSectionStart { .. } = payload {
-                    while let Some(Payload::CodeSectionEntry(..)) = parser.peek() {
-                        _ = parser.next();
-                    }
-                }
-
                 // Write the section header.
-                writer.push_verbatim::<anyhow::Result<_>>(|sink| {
+                archive.push_verbatim::<anyhow::Result<_>>(|sink| {
                     // Write section ID
                     sink.push(section_id);
 
@@ -150,52 +143,73 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
                     Ok(())
                 })?;
 
+                // Determine the set of relocations affecting the section. Note that, even if a
+                // section doesn't have any relocations, we still process it through the regular
+                // routine to ensure that it can still benefit from content-defined chunking.
+
+                // All real sections except custom sections affect the section index.
                 let section_idx = next_section_idx;
                 next_section_idx += 1;
 
-                // Get section information.
                 let unerased = &src[section_range.clone()];
-                let Some(relocations) = relocations.get(section_idx).filter(|v| !v.is_empty())
-                else {
-                    // This is a simple section without any relocations.
-                    writer.push_verbatim(|sink| {
-                        sink.write_bytes(unerased);
-                    });
-
-                    continue;
-                };
+                let relocations = relocations
+                    .get(section_idx)
+                    .context("missing relocations for section")?;
                 let relocations = &relocations[..];
 
                 // Erase the section's relocation data.
-                let erased = zeroize_relocations(unerased, relocations)?;
+                let erased_vec;
+                let erased = if relocations.is_empty() {
+                    unerased
+                } else {
+                    erased_vec = zeroize_relocations(unerased, relocations)?;
+                    erased_vec.as_slice()
+                };
 
-                let cut_ends =
-                    split_hinted_cdc(&erased, relocations.iter().map(|v| v.relocation_range()));
+                // Determine chunking cuts for the section.
+                let cut_ends = if let Payload::CodeSectionStart { .. } = payload {
+                    // Cutting a function down its middle makes no sense. Make the function itself
+                    // an atomic region. We don't need to emit atomic regions for relocations since
+                    // they're contained within a single function.
+                    let atomic_regions = iter::from_fn(|| {
+                        let Some(Payload::CodeSectionEntry(re)) = parser.peek() else {
+                            return None;
+                        };
 
-                let mut chunks = Vec::new();
+                        _ = parser.next();
 
-                {
-                    let mut cut_start = 0;
-                    let mut relocations = relocations;
+                        let range = re.range();
 
-                    for cut_end in cut_ends {
-                        let cut_start = mem::replace(&mut cut_start, cut_end);
+                        Some((range.start - section_range.start)..(range.end - section_range.start))
+                    });
 
-                        chunks.push(compute_local_relocations(
-                            &unerased[cut_start..cut_end],
-                            cut_start,
-                            &mut relocations,
-                        )?);
-                    }
+                    split_hinted_cdc(erased, atomic_regions)
+                } else {
+                    // Only make relocations atomic.
+                    split_hinted_cdc(erased, relocations.iter().map(|v| v.relocation_range()))
+                };
+
+                // Produce each chunk's local relocation set and write it to the archive.
+                let mut cut_start = 0;
+                let mut relocations = relocations;
+
+                for cut_end in cut_ends {
+                    let cut_start = mem::replace(&mut cut_start, cut_end);
+
+                    let (symbols, relocations) = compute_local_relocations(
+                        &unerased[cut_start..cut_end],
+                        cut_start,
+                        &mut relocations,
+                    )?;
+
+                    archive.push_blob(&symbols, &relocations, &erased[cut_start..cut_end]);
                 }
-
-                // TODO
             }
         }
     }
 
     Ok(SplitModuleResult {
-        archive: writer.finish(),
+        archive,
         bytes_truncated,
     })
 }

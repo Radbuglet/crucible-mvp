@@ -541,24 +541,12 @@ impl<'a> ByteParse<'a> for VarByteVec {
 // === Writing === //
 
 pub trait BufWriter {
+    fn write_bytes(&mut self, v: &[u8]);
+
     fn write_u8(&mut self, v: u8) {
         self.write_bytes(&[v]);
     }
 
-    fn write_bytes(&mut self, v: &[u8]);
-}
-
-impl BufWriter for Vec<u8> {
-    fn write_u8(&mut self, v: u8) {
-        self.push(v)
-    }
-
-    fn write_bytes(&mut self, v: &[u8]) {
-        self.extend_from_slice(v)
-    }
-}
-
-pub trait Leb128WriteExt: BufWriter {
     fn write_u32(&mut self, v: u32) {
         self.write_bytes(&v.to_le_bytes());
     }
@@ -647,7 +635,55 @@ pub trait Leb128WriteExt: BufWriter {
     }
 }
 
-impl<E: ?Sized + BufWriter> Leb128WriteExt for E {}
+pub trait LookBackBufWriter: BufWriter {
+    fn written(&self) -> &[u8];
+
+    fn written_mut(&mut self) -> &mut [u8];
+
+    fn write_len(&self) -> usize {
+        self.written().len()
+    }
+
+    fn write_sectioned<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let start = self.write_len();
+        self.write_u32(0xABADF00D);
+        let res = f(self);
+        let len = self.write_len() - start;
+        BufRewriter(&mut self.written_mut()[start..]).write_u32(len as u32);
+        res
+    }
+}
+
+impl BufWriter for Vec<u8> {
+    fn write_u8(&mut self, v: u8) {
+        self.push(v)
+    }
+
+    fn write_bytes(&mut self, v: &[u8]) {
+        self.extend_from_slice(v)
+    }
+}
+
+impl LookBackBufWriter for Vec<u8> {
+    fn written(&self) -> &[u8] {
+        self.as_slice()
+    }
+
+    fn written_mut(&mut self) -> &mut [u8] {
+        self.as_mut_slice()
+    }
+}
+
+#[derive(Debug)]
+pub struct BufRewriter<'a>(pub &'a mut [u8]);
+
+impl BufWriter for BufRewriter<'_> {
+    fn write_bytes(&mut self, v: &[u8]) {
+        let (to_write, remainder) = mem::take(&mut self.0).split_at_mut(v.len());
+        self.0 = remainder;
+        to_write.copy_from_slice(v);
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct LenCounter(pub usize);

@@ -5,11 +5,17 @@ use blake3::Hash;
 use rustc_hash::FxHashMap;
 
 use crate::utils::{
-    BufWriter, ByteCursor, ByteParse, ByteParseList, Leb128WriteExt as _, SliceExt as _,
-    VarByteVec, VarU32,
+    BufWriter, ByteCursor, ByteParse, ByteParseList, LookBackBufWriter, SliceExt as _, VarByteVec,
+    VarU32,
 };
 
 // === Common === //
+
+pub const INDEX_MAGIC_NUMBER: u64 = u64::from_le_bytes(*b"CruWsIdx");
+pub const INDEX_VERSION_NUMBER: u32 = 1;
+
+pub const BLOB_MAGIC_NUMBER: u64 = u64::from_le_bytes(*b"CruWsBlb");
+pub const BLOB_VERSION_NUMBER: u32 = 1;
 
 #[derive(Debug)]
 pub struct LocalReloc {
@@ -35,19 +41,31 @@ impl ByteParse<'_> for LocalReloc {
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 pub enum RelocCategory {
-    Fixed32,
-    Fixed64,
-    Var32,
-    Var64,
+    Fixed32 = 0,
+    Fixed64 = 1,
+    Var32 = 2,
+    Var64 = 3,
+}
+
+impl RelocCategory {
+    pub fn from_byte(v: u8) -> anyhow::Result<Self> {
+        match v {
+            0 => Ok(Self::Fixed32),
+            1 => Ok(Self::Fixed64),
+            2 => Ok(Self::Var32),
+            3 => Ok(Self::Var64),
+            _ => Err(anyhow::anyhow!("unknown segment kind {v}")),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum SegmentKind {
+enum ChunkKind {
     Verbatim = 0,
     Blob = 1,
 }
 
-impl SegmentKind {
+impl ChunkKind {
     pub fn from_byte(v: u8) -> anyhow::Result<Self> {
         match v {
             0 => Ok(Self::Verbatim),
@@ -61,130 +79,124 @@ impl SegmentKind {
 
 #[derive(Debug)]
 pub struct WasmallArchive {
-    pub out_buf: Vec<u8>,
+    pub index_buf: Vec<u8>,
     pub blob_buf: Vec<u8>,
-    pub hashes: FxHashMap<Hash, Range<usize>>,
+    pub blobs: FxHashMap<Hash, Range<usize>>,
 }
 
-#[derive(Debug, Default)]
-pub struct WasmallWriter {
-    /// A general purpose buffer storing the data for all fragments needed to assemble the final
-    /// module.
-    buf: Vec<u8>,
+impl Default for WasmallArchive {
+    fn default() -> Self {
+        let mut index_buf = Vec::new();
 
-    /// A vector of all segments to be written.
-    segments: Vec<Segment>,
-}
+        index_buf.write_u64(INDEX_MAGIC_NUMBER);
+        index_buf.write_var_u32(INDEX_VERSION_NUMBER);
 
-#[derive(Debug)]
-enum Segment {
-    Verbatim(Range<usize>),
-    Blob {
-        /// The byte range in the `blob_buf` of the blob's data.
-        blob_range: Range<usize>,
-
-        /// The byte range in the `main_buf` corresponding to the blob expansion's compressed parameters.
-        concretes: Range<usize>,
-    },
-}
-
-impl WasmallWriter {
-    pub fn push_verbatim<R>(&mut self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
-        let start = self.buf.len();
-        let res = f(&mut self.buf);
-
-        match self.segments.last_mut() {
-            Some(Segment::Verbatim(verbatim)) => {
-                verbatim.end = self.buf.len();
-            }
-            _ => {
-                self.segments.push(Segment::Verbatim(start..self.buf.len()));
-            }
+        Self {
+            index_buf,
+            blob_buf: Vec::new(),
+            blobs: FxHashMap::default(),
         }
+    }
+}
 
-        res
+impl WasmallArchive {
+    pub fn push_verbatim<R>(&mut self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+        // Write the chunk kind.
+        self.index_buf.write_u8(ChunkKind::Verbatim as u8);
+
+        // Write out the chunk.
+        self.index_buf.write_sectioned(|writer| f(writer))
     }
 
     pub fn push_blob(&mut self, symbols: &[u64], relocations: &[LocalReloc], erased_data: &[u8]) {
-        todo!()
-    }
+        // Write the blob.
+        let blob_hash = {
+            let blob_start = self.blob_buf.len();
+            {
+                // Write out the magic and version number.
+                self.blob_buf.write_u64(BLOB_MAGIC_NUMBER);
+                self.blob_buf.write_var_u32(BLOB_VERSION_NUMBER);
 
-    pub fn finish(self) -> WasmallArchive {
-        let mut out_buf = Vec::new();
-        let mut blob_buf = Vec::new();
-        let mut hashes = FxHashMap::default();
-
-        for segment in self.segments {
-            match segment {
-                Segment::Verbatim(range) => {
-                    out_buf.push(0);
-                    out_buf.write_var_u32(u32::try_from(range.len()).unwrap());
-                    out_buf.extend_from_slice(&self.buf[range]);
-                }
-                Segment::Blob {
-                    blob_range,
-                    concretes,
-                } => {
-                    out_buf.push(1);
-                    let hash = blake3::hash(&self.buf[blob_range.clone()]);
-                    out_buf.extend_from_slice(hash.as_bytes());
-                    out_buf.extend_from_slice(&self.buf[concretes]);
-
-                    if let hash_map::Entry::Vacant(entry) = hashes.entry(hash) {
-                        let start = blob_buf.len();
-                        blob_buf.extend_from_slice(&self.buf[blob_range]);
-                        entry.insert(start..blob_buf.len());
+                // Write out the `relocations`.
+                self.blob_buf.write_sectioned(|writer| {
+                    for relocation in relocations {
+                        relocation.write(writer);
                     }
+                });
+
+                // Write out the erased data.
+                self.blob_buf.write_bytes(erased_data);
+            }
+
+            // Hash and deduplicate the blob.
+            let hash = blake3::hash(&self.blob_buf[blob_start..]);
+
+            match self.blobs.entry(hash) {
+                hash_map::Entry::Vacant(entry) => {
+                    entry.insert(blob_start..self.blob_buf.len());
+                }
+                hash_map::Entry::Occupied(_) => {
+                    self.blob_buf.truncate(blob_start);
                 }
             }
-        }
 
-        WasmallArchive {
-            out_buf,
-            blob_buf,
-            hashes,
+            hash
+        };
+
+        // Write the index.
+        {
+            // Write the chunk kind.
+            self.index_buf.write_u8(ChunkKind::Blob as u8);
+
+            self.index_buf.write_sectioned(|writer| {
+                // Write the hash.
+                writer.write_bytes(blob_hash.as_bytes());
+
+                // Write the symbols.
+                for &symbol in symbols {
+                    writer.write_var_u64(symbol);
+                }
+            });
         }
     }
 }
 
 // === Reader === //
 
-// Module
+// Index
 #[derive(Debug, Clone)]
-pub struct WasmallMod<'a> {
-    segments: &'a [u8],
+pub struct WasmallIndex<'a> {
+    chunks: &'a [u8],
 }
 
-impl<'a> ByteParse<'a> for WasmallMod<'a> {
+impl<'a> ByteParse<'a> for WasmallIndex<'a> {
     type Out = Self;
 
     fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
-        Ok(Self { segments: buf.0 })
+        Ok(Self { chunks: buf.0 })
     }
 }
 
-impl<'a> WasmallMod<'a> {
-    pub fn segments(&self) -> ByteParseList<'a, WasmallModSeg<'a>> {
-        ByteParseList::new(ByteCursor(self.segments))
+impl<'a> WasmallIndex<'a> {
+    pub fn chunks(&self) -> ByteParseList<'a, WasmallModChunk<'a>> {
+        ByteParseList::new(ByteCursor(self.chunks))
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum WasmallModSeg<'a> {
+pub enum WasmallModChunk<'a> {
     Verbatim(WasmallModSegVerbatim<'a>),
     Blob(WasmallModSegBlob<'a>),
 }
 
-impl<'a> ByteParse<'a> for WasmallModSeg<'a> {
+impl<'a> ByteParse<'a> for WasmallModChunk<'a> {
     type Out = Self;
 
     fn parse_naked(buf: &mut ByteCursor<'a>) -> anyhow::Result<Self::Out> {
         Ok(
-            match buf
-                .lookahead_annotated("module kind", |c| SegmentKind::from_byte(c.read_u8()?))?
-            {
-                SegmentKind::Verbatim => Self::Verbatim(WasmallModSegVerbatim::parse(buf)?),
-                SegmentKind::Blob => Self::Blob(WasmallModSegBlob::parse(buf)?),
+            match buf.lookahead_annotated("module kind", |c| ChunkKind::from_byte(c.read_u8()?))? {
+                ChunkKind::Verbatim => Self::Verbatim(WasmallModSegVerbatim::parse(buf)?),
+                ChunkKind::Blob => Self::Blob(WasmallModSegBlob::parse(buf)?),
             },
         )
     }
