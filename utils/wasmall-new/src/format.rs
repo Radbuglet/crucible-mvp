@@ -275,7 +275,7 @@ impl WasmallArchive {
 
                 // Write the symbols.
                 for &symbol in symbols {
-                    writer.write_var_u64(symbol);
+                    writer.write_var_i64(symbol as i64);
                 }
             });
         }

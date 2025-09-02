@@ -304,7 +304,7 @@ pub fn compute_local_relocations(
         let index = relocations_tmp
             .iter()
             .position(|v| v.offset as usize >= offset + data.len())
-            .unwrap_or(0);
+            .unwrap_or(relocations_tmp.len());
 
         let (own_relocations, relocations_tmp) = relocations_tmp.split_at(index);
         *relocations = relocations_tmp;
