@@ -9,10 +9,9 @@ members = [
     "host/server",
     "utils/glacee",
     "utils/renderer",
-    "utils/wasmall",
     "utils/wasmlink-wasmtime",
     "utils/wasmlink",
-    "utils/wasmall-new",
+    "utils/wasmall",
     "utils/push-fastcdc",
 ]
 

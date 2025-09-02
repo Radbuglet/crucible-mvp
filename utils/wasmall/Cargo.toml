@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.79"
-blake3 = "1.5.0"
+anyhow = "1.0.99"
+blake3 = "1.8.2"
 leb128 = "0.2.5"
-rustc-hash = "1.1.0"
-wasmparser = "0.121.0"
+push-fastcdc.workspace = true
+rustc-hash = "2.1.1"
+smallvec = "1.15.1"
+wasmparser = "0.238.0"
