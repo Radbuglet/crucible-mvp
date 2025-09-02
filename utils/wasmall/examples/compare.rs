@@ -1,6 +1,7 @@
 use std::{env, fmt};
 
 use anyhow::Context;
+use humansize::{DECIMAL, format_size};
 use wasmall::encode::{SplitModuleArgs, split_module};
 
 fn main() -> anyhow::Result<()> {
@@ -17,19 +18,21 @@ fn main() -> anyhow::Result<()> {
 
     let old_bin = split_module(SplitModuleArgs {
         src: &old_bin,
-        truncate_relocations: false,
+        truncate_relocations: true,
+        truncate_debug: true,
     })?
     .archive;
 
     let new_bin = split_module(SplitModuleArgs {
         src: &new_bin,
-        truncate_relocations: false,
+        truncate_relocations: true,
+        truncate_debug: true,
     })?
     .archive;
 
     let mut sum = 0usize;
     let mut account = |name: &dyn fmt::Display, sz: usize| {
-        eprintln!("{name}: {sz}");
+        eprintln!("{name}: {}", format_size(sz, DECIMAL));
         sum += sz;
     };
 
@@ -44,7 +47,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     eprintln!();
-    eprintln!("Total size: {sum}");
+    eprintln!("Total size: {}", format_size(sum, DECIMAL));
 
     Ok(())
 }

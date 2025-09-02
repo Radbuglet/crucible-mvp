@@ -13,6 +13,7 @@ fn main() -> anyhow::Result<()> {
     let archive = split_module(SplitModuleArgs {
         src: &code,
         truncate_relocations: false,
+        truncate_debug: false,
     })?
     .archive;
 

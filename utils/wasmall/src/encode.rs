@@ -13,12 +13,17 @@ use crate::{
     utils::{BufWriter, ByteCursor, VecExt as _},
 };
 
+// === Fine tuning === //
+
+pub const CDC_CONFIG: GearConfig = GearConfig::new(512, 4096, 32768);
+
 // === Driver === //
 
 #[derive(Debug)]
 pub struct SplitModuleArgs<'a> {
     pub src: &'a [u8],
     pub truncate_relocations: bool,
+    pub truncate_debug: bool,
 }
 
 #[derive(Debug)]
@@ -31,6 +36,7 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
     let SplitModuleArgs {
         src,
         truncate_relocations,
+        truncate_debug,
     } = args;
 
     // Collect all payloads ahead of time to avoid having to repeatedly check for errors.
@@ -108,11 +114,18 @@ pub fn split_module(args: SplitModuleArgs) -> anyhow::Result<SplitModuleResult> 
                     }
                 };
 
-                // Jettison out relocations if asked to do so. We only have options for removing
-                // relocations because all other sections could be removed by tools before us.
+                // Jettison out certain custom sections if asked to do so.
                 if let Payload::CustomSection(cs) = payload
-                    && (cs.name() == "linking" || cs.name() == "reloc.")
+                    && (cs.name().starts_with("linking") || cs.name().starts_with("reloc."))
                     && truncate_relocations
+                {
+                    bytes_truncated += cs.data().len();
+                    continue;
+                }
+
+                if let Payload::CustomSection(cs) = payload
+                    && (cs.name().starts_with(".debug"))
+                    && truncate_debug
                 {
                     bytes_truncated += cs.data().len();
                     continue;
@@ -243,7 +256,7 @@ pub fn split_hinted_cdc(
 
     loop {
         // Determine length of next chunk.
-        let (_, cut) = cdc.push(&GearConfig::STANDARD, GearTablesRef::new(), data);
+        let (_, cut) = cdc.push(&CDC_CONFIG, GearTablesRef::new(), data);
 
         let should_break = cut.is_none();
         let mut cut_len = cut.map_or(data.len(), |v| v.len);
