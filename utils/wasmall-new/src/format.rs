@@ -3,6 +3,7 @@ use std::{collections::hash_map, ops::Range};
 use anyhow::Context as _;
 use blake3::Hash;
 use rustc_hash::FxHashMap;
+use wasmparser::RelocationType;
 
 use crate::utils::{
     BufRewriter, BufWriter, ByteCursor, ByteParse, ByteParseList, LookBackBufWriter, VarI64,
@@ -65,27 +66,116 @@ impl ByteParse<'_> for LocalReloc {
 pub enum RelocCategory {
     Fixed32 = 0,
     Fixed64 = 1,
-    Var32 = 2,
-    Var64 = 3,
+    VarU32 = 2,
+    VarU64 = 3,
+    VarI32 = 4,
+    VarI64 = 5,
 }
 
 impl RelocCategory {
+    pub fn for_ty(ty: RelocationType) -> Self {
+        match ty {
+            // 0 / R_WASM_FUNCTION_INDEX_LEB: varuint32
+            RelocationType::FunctionIndexLeb => Self::VarU32,
+
+            // 1 / R_WASM_TABLE_INDEX_SLEB: varint32
+            RelocationType::TableIndexSleb => Self::VarI32,
+
+            // 2 / R_WASM_TABLE_INDEX_I32: uint32
+            RelocationType::TableIndexI32 => Self::Fixed32,
+
+            // 3 / R_WASM_MEMORY_ADDR_LEB: varuint32
+            RelocationType::MemoryAddrLeb => Self::VarU32,
+
+            // 4 / R_WASM_MEMORY_ADDR_SLEB: varint32
+            RelocationType::MemoryAddrSleb => Self::VarI32,
+
+            // 5 / R_WASM_MEMORY_ADDR_I32: uint32
+            RelocationType::MemoryAddrI32 => Self::Fixed32,
+
+            // 6 / R_WASM_TYPE_INDEX_LEB: varuint32
+            RelocationType::TypeIndexLeb => Self::VarU32,
+
+            // 7 / R_WASM_GLOBAL_INDEX_LEB: varuint32
+            RelocationType::GlobalIndexLeb => Self::VarU32,
+
+            // 8 / R_WASM_FUNCTION_OFFSET_I32: uint32
+            RelocationType::FunctionOffsetI32 => Self::Fixed32,
+
+            // 9 / R_WASM_SECTION_OFFSET_I32: uint32
+            RelocationType::SectionOffsetI32 => Self::Fixed32,
+
+            // 10 / R_WASM_EVENT_INDEX_LEB: varuint32
+            RelocationType::EventIndexLeb => Self::VarU32,
+
+            // ???
+            RelocationType::MemoryAddrRelSleb => Self::VarI32,
+
+            // ???
+            RelocationType::TableIndexRelSleb => Self::VarI32,
+
+            // 13 / R_WASM_GLOBAL_INDEX_I32: uint32
+            RelocationType::GlobalIndexI32 => Self::Fixed32,
+
+            // 14 / R_WASM_MEMORY_ADDR_LEB64: varuint64
+            RelocationType::MemoryAddrLeb64 => Self::VarU64,
+
+            // 15 / R_WASM_MEMORY_ADDR_SLEB64: varint64
+            RelocationType::MemoryAddrSleb64 => Self::VarI64,
+
+            // 16 / R_WASM_MEMORY_ADDR_I64: uint64
+            RelocationType::MemoryAddrI64 => Self::Fixed64,
+
+            // ???
+            RelocationType::MemoryAddrRelSleb64 => Self::VarI64,
+
+            // 18 / R_WASM_TABLE_INDEX_SLEB64: varint64
+            RelocationType::TableIndexSleb64 => Self::VarI64,
+
+            // 19 / R_WASM_TABLE_INDEX_I64: uint64
+            RelocationType::TableIndexI64 => Self::Fixed64,
+
+            // 20 / R_WASM_TABLE_NUMBER_LEB: varuint32
+            RelocationType::TableNumberLeb => Self::VarU32,
+
+            // ???
+            RelocationType::MemoryAddrTlsSleb => Self::VarI32,
+
+            // 22 / R_WASM_FUNCTION_OFFSET_I64: uint64
+            RelocationType::FunctionOffsetI64 => Self::Fixed64,
+
+            // 23 / R_WASM_MEMORY_ADDR_LOCREL_I32: uint32
+            RelocationType::MemoryAddrLocrelI32 => Self::Fixed32,
+
+            // 24 / R_WASM_TABLE_INDEX_REL_SLEB64: varint64
+            RelocationType::TableIndexRelSleb64 => Self::VarI64,
+
+            // ???
+            RelocationType::MemoryAddrTlsSleb64 => Self::VarI64,
+
+            // 26 / R_WASM_FUNCTION_INDEX_I32: uint32
+            RelocationType::FunctionIndexI32 => Self::Fixed32,
+        }
+    }
+
     pub fn from_byte(v: u8) -> anyhow::Result<Self> {
         match v {
             0 => Ok(Self::Fixed32),
             1 => Ok(Self::Fixed64),
-            2 => Ok(Self::Var32),
-            3 => Ok(Self::Var64),
+            2 => Ok(Self::VarU32),
+            3 => Ok(Self::VarU64),
+            4 => Ok(Self::VarI32),
+            5 => Ok(Self::VarI64),
             _ => Err(anyhow::anyhow!("unknown segment kind {v}")),
         }
     }
 
     pub fn length(self) -> usize {
         match self {
-            RelocCategory::Fixed32 => 4,
-            RelocCategory::Fixed64 => 8,
-            RelocCategory::Var32 => 5,
-            RelocCategory::Var64 => 10,
+            Self::Fixed32 => 4,
+            Self::Fixed64 => 8,
+            Self::VarU32 | Self::VarI32 => 5,
+            Self::VarU64 | Self::VarI64 => 10,
         }
     }
 }
@@ -333,10 +423,16 @@ impl<'a> WasmallModSegBlob<'a> {
                 RelocCategory::Fixed64 => {
                     out_range.write_u64((value as u64).wrapping_add(addend as u64));
                 }
-                RelocCategory::Var32 => {
+                RelocCategory::VarI32 => {
+                    out_range.write_var_i32_full((value as i32).wrapping_add(addend as i32));
+                }
+                RelocCategory::VarI64 => {
+                    out_range.write_var_i64_full(value.wrapping_add(addend));
+                }
+                RelocCategory::VarU32 => {
                     out_range.write_var_u32_full((value as u32).wrapping_add(addend as u32));
                 }
-                RelocCategory::Var64 => {
+                RelocCategory::VarU64 => {
                     out_range.write_var_u64_full((value as u64).wrapping_add(addend as u64));
                 }
             }

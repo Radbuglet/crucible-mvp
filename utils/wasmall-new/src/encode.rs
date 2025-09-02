@@ -320,22 +320,7 @@ pub fn compute_local_relocations(
     for &(mut relocation) in relocations {
         relocation.offset -= offset as u32;
 
-        let category = {
-            use RelocationType::*;
-
-            match relocation.ty {
-                FunctionIndexLeb | TableIndexSleb | MemoryAddrLeb | MemoryAddrSleb
-                | TypeIndexLeb | GlobalIndexLeb | EventIndexLeb | MemoryAddrRelSleb
-                | TableIndexRelSleb | TableNumberLeb | MemoryAddrTlsSleb => RelocCategory::Var32,
-                MemoryAddrLeb64 | MemoryAddrSleb64 | TableIndexSleb64 | TableIndexRelSleb64
-                | MemoryAddrRelSleb64 | MemoryAddrTlsSleb64 => RelocCategory::Var64,
-
-                TableIndexI32 | MemoryAddrI32 | FunctionOffsetI32 | SectionOffsetI32
-                | GlobalIndexI32 | MemoryAddrLocrelI32 | FunctionIndexI32 => RelocCategory::Fixed32,
-
-                MemoryAddrI64 | TableIndexI64 | FunctionOffsetI64 => RelocCategory::Fixed64,
-            }
-        };
+        let category = RelocCategory::for_ty(relocation.ty);
 
         let value = &data[relocation.relocation_range()];
         let value = match category {
@@ -349,13 +334,25 @@ pub fn compute_local_relocations(
                 let value = ByteCursor(value).read_u64().unwrap();
                 value.wrapping_sub(relocation.addend as u64)
             }
-            RelocCategory::Var32 => {
+            RelocCategory::VarI32 => {
+                let value = ByteCursor(value).read_var_i32().unwrap();
+                let value = value.wrapping_sub(relocation.addend as i32);
+
+                value as u64
+            }
+            RelocCategory::VarI64 => {
+                let value = ByteCursor(value).read_var_i64().unwrap();
+                let value = value.wrapping_sub(relocation.addend);
+
+                value as u64
+            }
+            RelocCategory::VarU32 => {
                 let value = ByteCursor(value).read_var_u32().unwrap();
                 let value = value.wrapping_sub(relocation.addend as u32);
 
                 value as u64
             }
-            RelocCategory::Var64 => {
+            RelocCategory::VarU64 => {
                 let value = ByteCursor(value).read_var_u64().unwrap();
                 value.wrapping_sub(relocation.addend as u64)
             }
