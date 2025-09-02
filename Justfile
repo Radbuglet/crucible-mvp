@@ -24,4 +24,4 @@ compare-save-right: build
     cp target/wasm32-unknown-unknown/debug/demo-game.wasm private/compare_right.wasm
 
 compare:
-    cargo run -p wasmall --example compare_sets -- private/compare_left.wasm private/compare_right.wasm
+    cargo run -p wasmall --example compare -- private/compare_left.wasm private/compare_right.wasm
