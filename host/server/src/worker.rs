@@ -59,33 +59,25 @@ impl GlobalState {
                 break;
             };
 
-            let span = info_span!("connection", id = id_gen);
+            tokio::spawn(
+                handle_quinn_net_task(self.clone().process_conn(conn))
+                    .instrument(info_span!("connection", id = id_gen)),
+            );
             id_gen += 1;
-
-            tokio::spawn({
-                let me = self.clone();
-
-                async move {
-                    tracing::info!(
-                        "Got remote connection from address {}!",
-                        conn.remote_address()
-                    );
-
-                    if let Err(err) = me.process_conn(conn).await {
-                        tracing::error!("{err}");
-                    }
-                }
-                .instrument(span)
-            });
         }
 
         Ok(())
     }
 
     async fn process_conn(self: Arc<Self>, conn: quinn::Incoming) -> anyhow::Result<()> {
+        tracing::info!(
+            "got remote connection from address {}",
+            conn.remote_address()
+        );
+
         let conn = conn.accept()?.await?;
 
-        tracing::info!("Accepted connection!");
+        tracing::info!("accepted connection");
 
         let mut id_gen = 0;
 
@@ -102,8 +94,7 @@ impl GlobalState {
             let rx = wrap_stream_rx(rx, 64);
 
             tokio::spawn(
-                self.clone()
-                    .process_stream(tx, rx)
+                handle_quinn_net_task(self.clone().process_stream(tx, rx))
                     .instrument(info_span!("stream", id = id_gen)),
             );
             id_gen += 1;
@@ -116,27 +107,6 @@ impl GlobalState {
 
     async fn process_stream(
         self: Arc<Self>,
-        tx: FrameEncoder<SendStream>,
-        rx: FrameDecoder<RecvStream>,
-    ) {
-        if let Err(err) = self.process_stream_inner(tx, rx).await {
-            match err.downcast_ref::<quinn::ConnectionError>() {
-                Some(
-                    ConnectionError::ApplicationClosed(_) | ConnectionError::ConnectionClosed(_),
-                ) => {
-                    // (fallthrough)
-                }
-                _ => {
-                    tracing::error!("stream closed erroneously: {err}")
-                }
-            }
-        }
-
-        tracing::info!("stream closed naturally");
-    }
-
-    async fn process_stream_inner(
-        self: Arc<Self>,
         mut tx: FrameEncoder<SendStream>,
         mut rx: FrameDecoder<RecvStream>,
     ) -> anyhow::Result<()> {
@@ -145,12 +115,16 @@ impl GlobalState {
             .context("no hello packet sent")?;
 
         match hello_packet {
-            game::SbHello1::Ping => loop {
-                send_packet(&mut tx, game::CbPingRes).await?;
-                recv_packet::<game::SbPingReq>(&mut rx).await?;
-            },
+            game::SbHello1::Ping => {
+                tracing::info!("client wants to ping");
+
+                loop {
+                    send_packet(&mut tx, game::CbPingRes).await?;
+                    recv_packet::<game::SbPingReq>(&mut rx).await?;
+                }
+            }
             game::SbHello1::ServerList => {
-                tracing::info!("Client wants server list");
+                tracing::info!("client wants server list");
 
                 send_packet(
                     &mut tx,
@@ -165,41 +139,43 @@ impl GlobalState {
                     },
                 )
                 .await?;
-
-                tracing::info!("Sent server list!");
             }
             game::SbHello1::Download { hash } => 'dl: {
+                tracing::info!("client wants to download {hash}");
+
                 let archive = match &self.content.config {
                     ContentConfig::SelfHosted(archive) => archive,
                     ContentConfig::Content { .. } => {
+                        tracing::warn!("download not supported");
+
                         send_packet(&mut tx, game::CbDownloadRes::NotSupported).await?;
                         break 'dl;
                     }
                 };
 
-                let Some(range) = archive.blobs.get(&hash) else {
+                let content = if hash == self.content.index_hash {
+                    &archive.index_buf[..]
+                } else if let Some(range) = archive.blobs.get(&hash) {
+                    &archive.index_buf[range.clone()]
+                } else {
+                    tracing::warn!("blob with has {hash} not found");
                     send_packet(&mut tx, game::CbDownloadRes::NotFound).await?;
                     break 'dl;
                 };
 
-                tracing::info!("Client wants to download {hash}");
-
                 feed_packet(
                     &mut tx,
                     game::CbDownloadRes::Found {
-                        content_len: range.len() as u32,
+                        content_len: content.len() as u32,
                     },
                 )
                 .await?;
 
-                tx.get_mut()
-                    .write_all(&archive.blob_buf[range.clone()])
-                    .await?;
-
+                tx.get_mut().write_all(content).await?;
                 tx.get_mut().flush().await?;
             }
             game::SbHello1::Play { game_hash } => {
-                tracing::info!("Client wants to play game with hash {game_hash:?}");
+                tracing::info!("client wants to play game with hash {game_hash:?}");
 
                 send_packet(&mut tx, game::CbPlayRes::Ready).await?;
             }
@@ -211,4 +187,20 @@ impl GlobalState {
 
         Ok(())
     }
+}
+
+async fn handle_quinn_net_task(f: impl Future<Output = anyhow::Result<()>>) {
+    if let Err(err) = f.await {
+        match err.downcast_ref::<quinn::ConnectionError>() {
+            Some(ConnectionError::ApplicationClosed(_) | ConnectionError::ConnectionClosed(_)) => {
+                // (fallthrough)
+            }
+            _ => {
+                tracing::error!("closed erroneously: {err}");
+                return;
+            }
+        }
+    }
+
+    tracing::info!("closed gracefully");
 }
