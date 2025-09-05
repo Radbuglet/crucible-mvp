@@ -8,7 +8,8 @@
 //! implement the [DTLS] encryption layer, nor the [SCTP] protocol used by data channels, nor the
 //! (S)[RTP] protocol used by media channels. Additionally, this crate does not implement [TURN] for
 //! when a direct UDP socket cannot be obtained. Instead, the user is expected to use a protocol
-//! like [QUIC] to connect the two peers.
+//! like [QUIC] to connect the two peers and the party server protocol to establish a proxied
+//! connection between the peers.
 //!
 //! Currently, this is just a wrapper around [`rice-proto`] which is can interop with `tokio`.
 //! Ideally, however, we'd like to eventually adopt [some techniques from Tailscale] to achieve

@@ -15,7 +15,7 @@ use crate::{
 
 // === Fine tuning === //
 
-pub const CDC_CONFIG: GearConfig = GearConfig::new(512, 4096, 32768);
+pub const CDC_CONFIG: GearConfig = GearConfig::STANDARD;
 
 // === Driver === //
 

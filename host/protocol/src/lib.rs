@@ -7,8 +7,7 @@
 //!    friends. These handle party chat, send instructions on how to join a dedicated server as a
 //!    party, and act as a signalling server for setting up peer-to-peer connections.
 //! 2. The [`content`] server protocol, which describes the types of requests that can be used to
-//!    download content. Content can be downloaded by either direct HTTP to a content server or
-//!    embedded within the [`game`] join protocol.
+//!    download content from a dedicated content server.
 //! 3. The [`game`] server protocol, which is over QUIC. This handles both ad-hoc and dedicated
 //!    servers. This only describes the login procedure for each type of server. Once
 //!    the login process is complete, the sockets simply send over whatever the game binary wants to

@@ -12,6 +12,14 @@ use tokio_util::{
 pub type FrameDecoder<T> = FramedRead<T, DecodeCodec>;
 pub type FrameEncoder<T> = FramedWrite<T, EncodeCodec>;
 
+pub fn wrap_stream_tx<T: AsyncWrite>(tx: T) -> FrameEncoder<T> {
+    FramedWrite::new(tx, EncodeCodec)
+}
+
+pub fn wrap_stream_rx<T: AsyncRead>(rx: T, max_packet_size: u32) -> FrameDecoder<T> {
+    FramedRead::new(rx, DecodeCodec { max_packet_size })
+}
+
 pub async fn recv_packet<P: DeserializeOwned>(
     decoder: &mut FrameDecoder<impl AsyncRead + Unpin>,
 ) -> anyhow::Result<Option<P>> {

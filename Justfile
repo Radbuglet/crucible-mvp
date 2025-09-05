@@ -1,13 +1,13 @@
-run: build
+client: build-guest
     cargo run --bin crucible-client -- ./target/wasm32-unknown-unknown/debug/demo-game.wasm
 
-build:
+server: build-guest
+    cargo run -p crucible-server -- target/wasm32-unknown-unknown/debug/demo-game.wasm
+
+build-guest:
     cargo rustc -p demo-game --target wasm32-unknown-unknown -- -C link-args="--emit-relocs"
 
-server:
-    cargo run -p crucible-server
-
-roundtrip: build
+roundtrip: build-guest
     mkdir -p private/
     cp target/wasm32-unknown-unknown/debug/demo-game.wasm private/one.wasm
     cargo run -p wasmall --example roundtrip -- private/one.wasm > private/two.wasm
@@ -15,11 +15,11 @@ roundtrip: build
     wasm2wat private/two.wasm > private/two.wat
     diff private/one.wat private/two.wat > private/diff.txt
 
-compare-save-left: build
+compare-save-left: build-guest
     mkdir -p private/
     cp target/wasm32-unknown-unknown/debug/demo-game.wasm private/compare_left.wasm
 
-compare-save-right: build
+compare-save-right: build-guest
     mkdir -p private/
     cp target/wasm32-unknown-unknown/debug/demo-game.wasm private/compare_right.wasm
 

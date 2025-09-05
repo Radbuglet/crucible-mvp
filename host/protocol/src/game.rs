@@ -1,26 +1,30 @@
-//! To connect to a dedicated host, the client first connects to the server to request its server
-//! list information. The server quickly returns, among other things, the game's hash and a URL to
-//! the content server and disconnects the client. The client can then download the content from the
-//! content server without being connected to the game server. After that process is done, the
-//! client can reconnect to the dedicated server and send the `Play` packet with the hash of the
-//! game it just downloaded. After that, the protocol forwards user-generated packets and
-//! occasionally sends heartbeats to keep the QUIC connection alive.
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SbHello1 {
-    /// Transitions the connection into the `ServerList` state.
+    /// Transitions the socket to the `Ping` state. Replies immediately with a [`CbPingRes`] packet.
+    /// Used to both keep the socket alive and measure latency.
+    Ping,
+
+    /// Replies with [`CbServerList1`] and closes the stream.
     ServerList,
 
-    /// Transitions the connection into the `Download` state governed by the
-    /// [content](crate::content) protocol.
-    Download,
+    /// Replies with [`CbDownloadRes`], the payload if applicable, and closes the stream.
+    Download { hash: blake3::Hash },
 
-    /// If the game hash is correct, transitions the connection into the `Play` state and
-    /// transparently forwards packets.
+    /// Replies with [`CbPlayRes`] and then transparently . This can only happen once for a given connection.
     Play { game_hash: blake3::Hash },
+
+    /// If `Play` has already been received in another stream, `PlayNewStream` will transition the
+    /// current stream into
+    PlayNewStream,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SbPingReq;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CbPingRes;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CbServerList1 {
@@ -36,4 +40,17 @@ pub struct CbServerList1 {
 
     /// The hash of the game's blob.
     pub game_hash: blake3::Hash,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CbDownloadRes {
+    Found { content_len: u32 },
+    NotFound,
+    NotSupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CbPlayRes {
+    Ready,
+    WrongHash { expected: blake3::Hash },
 }

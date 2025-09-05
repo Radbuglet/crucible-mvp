@@ -1,19 +1,23 @@
-use std::{net::SocketAddr, str::FromStr, sync::Arc};
+use std::{env, net::SocketAddr, str::FromStr, sync::Arc};
 
-use anyhow::Context;
-use crucible_protocol::{
-    codec::{DecodeCodec, EncodeCodec, FrameDecoder, FrameEncoder, recv_packet, send_packet},
-    game,
-};
+use anyhow::Context as _;
 use quinn::{
     crypto::rustls::QuicServerConfig,
-    rustls::{self, pki_types::PrivatePkcs8KeyDer},
+    rustls::{self, crypto, pki_types::PrivatePkcs8KeyDer},
 };
-use tracing::{Instrument, info_span, level_filters::LevelFilter};
+use tokio::fs;
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
+use wasmall::encode::{SplitModuleArgs, split_module};
+
+use crate::worker::{ContentConfig, GlobalState};
+
+mod main_thread;
+mod worker;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Setup logger
     tracing_subscriber::fmt::fmt()
         .with_env_filter(
             EnvFilter::builder()
@@ -22,6 +26,22 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // Parse config
+    let args = env::args().collect::<Vec<String>>();
+    let args = args.iter().map(|v| v.as_str()).collect::<Vec<_>>();
+    let args = args.as_slice();
+
+    let [_bin_name, mod_path] = *args else {
+        anyhow::bail!("invalid usage");
+    };
+
+    // Setup crypto
+    crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .ok()
+        .context("failed to install AWS-LC crypto provider")?;
+
+    // Setup endpoint
     let bind_addr = SocketAddr::from_str("127.0.0.1:8080").unwrap();
 
     tracing::info!("Generating self-signed certificate");
@@ -43,84 +63,23 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Listening on {bind_addr}");
 
-    let mut id_gen = 0u64;
+    // Create global state
+    let archive = split_module(SplitModuleArgs {
+        src: &fs::read(mod_path).await.context("failed to read module")?,
+        truncate_relocations: true,
+        truncate_debug: false,
+    })?
+    .archive;
+    let archive = Arc::new(archive);
+    let globals = Arc::new(GlobalState::new(ContentConfig::SelfHosted(archive)));
 
-    loop {
-        let Some(conn) = endpoint.accept().await else {
-            break;
-        };
+    // Run workers
+    let listener = tokio::spawn(globals.listen(endpoint));
 
-        let span = info_span!("socket process", id = id_gen);
-        id_gen += 1;
+    // Run main thread
+    // TODO
 
-        tokio::spawn(
-            async move {
-                tracing::info!(
-                    "Got remote connection from address {}!",
-                    conn.remote_address()
-                );
-
-                if let Err(err) = process_conn(conn).await {
-                    tracing::error!("{err}");
-                }
-            }
-            .instrument(span),
-        );
-    }
-
-    Ok(())
-}
-
-async fn process_conn(conn: quinn::Incoming) -> anyhow::Result<()> {
-    let conn = conn.accept()?.await?;
-
-    tracing::info!("Accepted connection!");
-
-    let (main_stream_tx, main_stream_rx) = conn.accept_bi().await?;
-    let mut main_stream_tx = FrameEncoder::new(main_stream_tx, EncodeCodec);
-    let mut main_stream_rx = FrameDecoder::new(
-        main_stream_rx,
-        DecodeCodec {
-            max_packet_size: 64,
-        },
-    );
-
-    let hello_packet = recv_packet::<game::SbHello1>(&mut main_stream_rx)
-        .await?
-        .context("no hello packet sent")?;
-
-    match hello_packet {
-        game::SbHello1::ServerList => {
-            tracing::info!("Client wants server list");
-
-            send_packet(
-                &mut main_stream_tx,
-                game::CbServerList1 {
-                    motd: "Hello polynyan~".to_string(),
-                    icon_png: Vec::new(),
-                    content_server: None,
-                    game_hash: blake3::Hash::from_bytes([0; blake3::OUT_LEN]),
-                },
-            )
-            .await?;
-
-            // Only the last peer receiving data can be sure that it received the entire packet.
-            // Hence, we have to wait for the peer to either time-out or tell us that they
-            // disconnected.
-            // TODO: Is there a better way to handle this? Should we close streams instead?
-            conn.closed().await;
-
-            tracing::info!("Sent server list!");
-        }
-        game::SbHello1::Download => {
-            tracing::info!("Client wants to download");
-        }
-        game::SbHello1::Play { game_hash } => {
-            tracing::info!("Client wants to play game with hash {game_hash:?}");
-        }
-    }
-
-    tracing::info!("Connection closed");
+    listener.await??;
 
     Ok(())
 }
