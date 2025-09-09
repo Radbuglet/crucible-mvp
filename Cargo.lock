@@ -621,7 +621,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
 dependencies = [
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
 ]
 
 [[package]]
@@ -986,6 +986,7 @@ name = "crucible"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
+ "blake3",
  "bytemuck",
  "crucible-abi",
  "enum-ordinalize",
@@ -993,6 +994,7 @@ dependencies = [
  "glam",
  "image",
  "scopeguard",
+ "thiserror 2.0.16",
  "tracing",
  "tracing-subscriber",
  "wasmlink",
@@ -1002,6 +1004,7 @@ dependencies = [
 name = "crucible-abi"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "bytemuck",
  "wasmlink",
 ]
@@ -2302,7 +2305,7 @@ dependencies = [
  "rustc-hash 1.1.0",
  "spirv",
  "strum",
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
  "unicode-ident",
 ]
 
@@ -3183,7 +3186,7 @@ dependencies = [
  "rustc-hash 2.1.1",
  "rustls",
  "socket2 0.5.10",
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
  "tokio",
  "tracing",
  "web-time",
@@ -3206,7 +3209,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "slab",
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
  "tinyvec",
  "tracing",
  "web-time",
@@ -4001,7 +4004,7 @@ checksum = "b0cbb3d24b65a7de2d06219e36a55a5125796b83b66850d724c9a26b30fe1ac7"
 dependencies = [
  "byteorder",
  "stun-types",
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
  "tracing",
 ]
 
@@ -4019,7 +4022,7 @@ dependencies = [
  "sha1",
  "sha2",
  "smallvec",
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
  "tracing",
 ]
 
@@ -4085,11 +4088,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.14"
+version = "2.0.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b0949c3a6c842cbde3f1686d6eea5a010516deb7085f79db747562d4102f41e"
+checksum = "3467d614147380f2e4e374161426ff399c91084acd2363eaf549172b3d5e60c0"
 dependencies = [
- "thiserror-impl 2.0.14",
+ "thiserror-impl 2.0.16",
 ]
 
 [[package]]
@@ -4105,9 +4108,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.14"
+version = "2.0.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc5b44b4ab9c2fdd0e0512e6bece8388e214c0749f5862b114cc5b7a25daf227"
+checksum = "6c5e1be1c48b9172ee610da68fd9cd2770e7a4056cb3fc98710ee6906f0c7960"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4393,7 +4396,7 @@ dependencies = [
  "byteorder",
  "rustls",
  "stun-proto",
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
  "tracing",
  "turn-types",
 ]
@@ -4408,7 +4411,7 @@ dependencies = [
  "rand 0.9.2",
  "stun-proto",
  "stun-types",
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
  "tracing",
 ]
 
@@ -4840,7 +4843,7 @@ dependencies = [
  "pulley-interpreter",
  "smallvec",
  "target-lexicon 0.13.2",
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
  "wasmparser 0.235.0",
  "wasmtime-environ",
  "wasmtime-internal-math",
@@ -5172,7 +5175,7 @@ dependencies = [
  "raw-window-handle",
  "rustc-hash 1.1.0",
  "smallvec",
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
  "wgpu-core-deps-apple",
  "wgpu-core-deps-emscripten",
  "wgpu-core-deps-windows-linux-android",
@@ -5246,7 +5249,7 @@ dependencies = [
  "raw-window-handle",
  "renderdoc-sys",
  "smallvec",
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
  "wasm-bindgen",
  "web-sys",
  "wgpu-types",
@@ -5264,7 +5267,7 @@ dependencies = [
  "bytemuck",
  "js-sys",
  "log",
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
  "web-sys",
 ]
 
@@ -5334,7 +5337,7 @@ dependencies = [
  "regalloc2",
  "smallvec",
  "target-lexicon 0.13.2",
- "thiserror 2.0.14",
+ "thiserror 2.0.16",
  "wasmparser 0.235.0",
  "wasmtime-environ",
  "wasmtime-internal-cranelift",

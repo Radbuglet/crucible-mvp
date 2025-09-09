@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crucible::{
     base::{
         env::IntervalTimer,
-        logging::setup_logger,
+        logging::{setup_logger, tracing},
         task::{
             futures::{self, FutureExt},
             spawn_task,
@@ -13,6 +13,7 @@ use crucible::{
         color::Bgra8,
         texture::{CpuTexture, GpuDrawArgs},
     },
+    shell::socket::LoginSocket,
     window::{
         app::{Window, WindowEvent},
         defs::{KeyCode, PhysicalKey},
@@ -28,6 +29,10 @@ fn main() {
 async fn main_loop() {
     let mut window = Window::acquire();
     let mut timer = IntervalTimer::new(1. / 60.);
+
+    let socket = LoginSocket::connect("127.0.0.1:8080").await.unwrap();
+
+    tracing::info!("{:#?}", socket.info().await.unwrap());
 
     let my_texture = CpuTexture::from_rgba8(
         image::load_from_memory(include_bytes!("demo1.png"))

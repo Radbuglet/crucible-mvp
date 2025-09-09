@@ -1,9 +1,10 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::{
+    cell::{Cell, RefCell},
     fmt,
     marker::PhantomData,
-    mem::{self, MaybeUninit},
+    mem::{self, ManuallyDrop, MaybeUninit},
     ops::{Deref, Range},
     ptr, slice,
 };
@@ -713,6 +714,162 @@ impl<T: Strategy> Strategy for Option<T> {
                     .cast(),
                 value,
             )?;
+        }
+
+        Ok(())
+    }
+}
+
+// === Result === //
+
+// Views
+#[repr(C)]
+pub struct FfiResult<T, E> {
+    is_ok: bool,
+    value: FfiResultInner<T, E>,
+}
+
+#[repr(C)]
+union FfiResultInner<T, E> {
+    ok: ManuallyDrop<T>,
+    err: ManuallyDrop<E>,
+}
+
+impl<T, E> FfiResult<T, E> {
+    pub fn new(value: Result<T, E>) -> Self {
+        match value {
+            Ok(value) => Self::ok(value),
+            Err(value) => Self::err(value),
+        }
+    }
+
+    pub const fn ok(value: T) -> Self {
+        Self {
+            is_ok: true,
+            value: FfiResultInner {
+                ok: ManuallyDrop::new(value),
+            },
+        }
+    }
+
+    pub const fn err(value: E) -> Self {
+        Self {
+            is_ok: false,
+            value: FfiResultInner {
+                err: ManuallyDrop::new(value),
+            },
+        }
+    }
+
+    pub const fn decode(self) -> Result<T, E> {
+        match self.is_ok {
+            true => Ok(ManuallyDrop::into_inner(unsafe { self.value.ok })),
+            false => Err(ManuallyDrop::into_inner(unsafe { self.value.err })),
+        }
+    }
+
+    pub const fn decode_ref(&self) -> Result<&T, &E> {
+        match self.is_ok {
+            true => Ok(unsafe { &*(&self.value.ok as *const ManuallyDrop<T> as *const T) }),
+            false => Err(unsafe { &*(&self.value.err as *const ManuallyDrop<E> as *const E) }),
+        }
+    }
+
+    pub const fn decode_mut(&mut self) -> Result<&mut T, &mut E> {
+        match self.is_ok {
+            true => Ok(unsafe { &mut *(&mut self.value.ok as *mut ManuallyDrop<T> as *mut T) }),
+            false => Err(unsafe { &mut *(&mut self.value.err as *mut ManuallyDrop<E> as *mut E) }),
+        }
+    }
+}
+
+impl<T, E> From<Result<T, E>> for FfiResult<T, E> {
+    fn from(value: Result<T, E>) -> Self {
+        Self::new(value)
+    }
+}
+
+// Strategy
+impl<T: Marshal, E: Marshal> Marshal for Result<T, E> {
+    type Strategy = Result<T::Strategy, E::Strategy>;
+}
+
+impl<T: Strategy, E: Strategy> Strategy for Result<T, E> {
+    type Hostbound<'a> = FfiResult<T::Hostbound<'a>, E::Hostbound<'a>>;
+    type HostboundView = Result<T::HostboundView, E::HostboundView>;
+    type Guestbound = FfiResult<T::Guestbound, E::Guestbound>;
+    type GuestboundView<'a> = Result<T::GuestboundView<'a>, E::GuestboundView<'a>>;
+
+    fn decode_hostbound(
+        cx: &impl HostContext,
+        ptr: FfiPtr<Self::Hostbound<'static>>,
+    ) -> anyhow::Result<Self::HostboundView> {
+        let is_ok = *ptr
+            .field(ffi_offset!(
+                FfiResult<T::Hostbound<'static>, E::Hostbound<'static>>,
+                is_ok
+            ))
+            .cast::<u8>()
+            .read(cx)?;
+
+        match is_ok {
+            0 => {
+                let value = E::decode_hostbound(
+                    cx,
+                    ptr.field(ffi_offset!(
+                        FfiResult<T::Hostbound<'static>, E::Hostbound<'static>>,
+                        value
+                    ))
+                    .cast(),
+                )?;
+
+                Ok(Err(value))
+            }
+            1 => {
+                let value = T::decode_hostbound(
+                    cx,
+                    ptr.field(ffi_offset!(
+                        FfiResult<T::Hostbound<'static>, E::Hostbound<'static>>,
+                        value
+                    ))
+                    .cast(),
+                )?;
+
+                Ok(Ok(value))
+            }
+            v => anyhow::bail!("unknown result variant {v}"),
+        }
+    }
+
+    fn encode_guestbound(
+        cx: &mut impl HostContext,
+        out_ptr: FfiPtr<Self::Guestbound>,
+        value: &Self::GuestboundView<'_>,
+    ) -> anyhow::Result<()> {
+        *out_ptr
+            .field(ffi_offset!(FfiResult<T::Guestbound, E::Guestbound>, is_ok))
+            .cast::<u8>()
+            .write(cx)? = value.is_ok() as u8;
+
+        match value {
+            Ok(value) => {
+                T::encode_guestbound(
+                    cx,
+                    out_ptr
+                        .field(ffi_offset!(FfiResult<T::Guestbound, E::Guestbound>, value))
+                        .cast(),
+                    value,
+                )?;
+            }
+            Err(value) => {
+                E::encode_guestbound(
+                    cx,
+                    out_ptr
+                        .field(ffi_offset!(FfiResult<T::Guestbound, E::Guestbound>, value))
+                        .cast(),
+                    value,
+                )?;
+            }
         }
 
         Ok(())
@@ -1478,6 +1635,18 @@ impl<I: Strategy> OwnedGuestClosure_<I> {
     }
 
     #[must_use]
+    pub fn new_mut(f: impl 'static + FnMut(GuestboundOf<I>)) -> Self {
+        let f = RefCell::new(f);
+        Self::new(move |v| f.borrow_mut()(v))
+    }
+
+    #[must_use]
+    pub fn new_once(f: impl 'static + FnOnce(GuestboundOf<I>)) -> Self {
+        let f = Cell::new(Some(f));
+        Self::new(move |v| f.take().expect("closure can only be called once")(v))
+    }
+
+    #[must_use]
     pub fn wrap(raw: GuestClosure_<I>) -> Self {
         Self { raw }
     }
@@ -1517,7 +1686,7 @@ pub struct GuestClosure_<I: Strategy> {
 
 impl<I: Strategy> GuestClosure_<I> {
     #[must_use]
-    pub fn new_unmanaged(f: impl 'static + Fn(GuestboundOf<I>)) -> Self {
+    fn new_unmanaged(f: impl 'static + Fn(GuestboundOf<I>)) -> Self {
         cfgenius::cond! {
             if macro(is_wasm) {
                 Self {

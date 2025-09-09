@@ -100,8 +100,6 @@ impl GlobalState {
             id_gen += 1;
         }
 
-        tracing::info!("Connection closed!");
-
         Ok(())
     }
 
