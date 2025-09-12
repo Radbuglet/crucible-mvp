@@ -13,11 +13,8 @@ use winit::{
 };
 
 use crate::{
-    bindings::{env::EnvBindingsHandle, gfx::GfxBindingsHandle},
-    services::{
-        network::NetworkManagerHandle,
-        window::{WindowManagerHandle, WindowStateHandle, create_gfx_context},
-    },
+    bindings::{env::EnvBindingsHandle, gfx::GfxBindingsHandle, network::NetworkBindingsHandle},
+    services::window::{WindowManagerHandle, WindowStateHandle, create_gfx_context},
     utils::winit::{FallibleApplicationHandler, run_app_fallible},
 };
 
@@ -33,9 +30,9 @@ struct App {
 #[derive(Debug)]
 struct AppInitState {
     window_mgr: WindowManagerHandle,
-    network_mgr: NetworkManagerHandle,
     env_bindings: EnvBindingsHandle,
     gfx_bindings: GfxBindingsHandle,
+    net_bindings: NetworkBindingsHandle,
     main_window: WindowStateHandle,
     store: WslStore,
     _instance: wasmtime::Instance,
@@ -50,9 +47,6 @@ impl FallibleApplicationHandler for App {
         }
 
         block_on(async {
-            // Setup network manager
-            let network_mgr = self.root.add(NetworkManagerHandle::new(w), w);
-
             // Setup graphics
             let window = Arc::new(
                 event_loop.create_window(
@@ -80,6 +74,9 @@ impl FallibleApplicationHandler for App {
 
             gfx_bindings.install(&mut linker)?;
 
+            let net_bindings = self.root.add(NetworkBindingsHandle::new(w)?, w);
+            net_bindings.install(&mut linker)?;
+
             linker.define_unknown_imports_as_traps(&self.module)?;
 
             // Instantiate module
@@ -97,7 +94,7 @@ impl FallibleApplicationHandler for App {
                 Ok(())
             })?;
 
-            if gfx_bindings.callbacks(w).is_none() {
+            if gfx_bindings.user_callbacks(w).is_none() {
                 anyhow::bail!("`Window` must be `acquire`'d before the first `.await`-point");
             }
 
@@ -106,9 +103,9 @@ impl FallibleApplicationHandler for App {
 
             self.init = Some(AppInitState {
                 window_mgr: window_mgr.as_weak(),
-                network_mgr,
                 env_bindings,
                 gfx_bindings,
+                net_bindings,
                 main_window,
                 store,
                 _instance: instance,
@@ -149,7 +146,7 @@ impl FallibleApplicationHandler for App {
 
         match &event {
             WindowEvent::RedrawRequested => {
-                let Some(cbs) = init.gfx_bindings.callbacks(w) else {
+                let Some(cbs) = init.gfx_bindings.user_callbacks(w) else {
                     return Ok(());
                 };
 
@@ -178,7 +175,7 @@ impl FallibleApplicationHandler for App {
                 )?;
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let Some(cbs) = init.gfx_bindings.callbacks(w) else {
+                let Some(cbs) = init.gfx_bindings.user_callbacks(w) else {
                     return Ok(());
                 };
 
@@ -193,7 +190,7 @@ impl FallibleApplicationHandler for App {
                 })?;
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let Some(cbs) = init.gfx_bindings.callbacks(w) else {
+                let Some(cbs) = init.gfx_bindings.user_callbacks(w) else {
                     return Ok(());
                 };
 
@@ -227,7 +224,7 @@ impl FallibleApplicationHandler for App {
                     },
                 ..
             } => {
-                let Some(cbs) = init.gfx_bindings.callbacks(w) else {
+                let Some(cbs) = init.gfx_bindings.user_callbacks(w) else {
                     return Ok(());
                 };
 
@@ -279,7 +276,7 @@ impl FallibleApplicationHandler for App {
                 })?;
             }
             WindowEvent::CloseRequested => {
-                let Some(cbs) = init.gfx_bindings.callbacks(w) else {
+                let Some(cbs) = init.gfx_bindings.user_callbacks(w) else {
                     return Ok(());
                 };
 
@@ -309,7 +306,7 @@ impl FallibleApplicationHandler for App {
             event_loop.set_control_flow(ControlFlow::Wait);
         }
 
-        if init.gfx_bindings.callbacks(w).is_none() {
+        if init.gfx_bindings.user_callbacks(w).is_none() {
             event_loop.exit();
         }
 

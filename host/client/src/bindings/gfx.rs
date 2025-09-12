@@ -13,7 +13,7 @@ use crate::{services::window::WindowManagerHandle, utils::arena::GuestArena};
 pub struct GfxBindings {
     window_mgr: WindowManagerHandle,
     handles: GuestArena<wgpu::Texture>,
-    callbacks: Option<WindowCallbacks>,
+    user_callbacks: Option<WindowCallbacks>,
     redraw_requested: bool,
 }
 
@@ -33,14 +33,14 @@ impl GfxBindingsHandle {
         GfxBindings {
             window_mgr,
             handles: GuestArena::default(),
-            callbacks: None,
+            user_callbacks: None,
             redraw_requested: false,
         }
         .spawn(w)
     }
 
-    pub fn callbacks(self, w: Wr) -> Option<WindowCallbacks> {
-        self.r(w).callbacks
+    pub fn user_callbacks(self, w: Wr) -> Option<WindowCallbacks> {
+        self.r(w).user_callbacks
     }
 
     pub fn create_texture(self, texture: wgpu::Texture, w: W) -> anyhow::Result<u32> {
@@ -56,7 +56,7 @@ impl GfxBindingsHandle {
         linker.define_wsl(abi::WINDOW_BIND_HANDLERS, move |cx, args, ret| {
             let w = cx.w();
 
-            self.m(w).callbacks = Some(WindowCallbacks {
+            self.m(w).user_callbacks = Some(WindowCallbacks {
                 redraw_requested: args.redraw_requested,
                 mouse_event: args.mouse_event,
                 mouse_moved: args.mouse_moved,
@@ -70,7 +70,7 @@ impl GfxBindingsHandle {
         linker.define_wsl(abi::WINDOW_UNBIND_HANDLERS, move |cx, (), ret| {
             let w = cx.w();
 
-            self.m(w).callbacks = None;
+            self.m(w).user_callbacks = None;
 
             ret.finish(cx, &())
         })?;

@@ -1,11 +1,45 @@
-use anyhow::Context;
+use std::io;
+
 use futures_util::SinkExt;
 use serde::de::DeserializeOwned;
+use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::{
     bytes::{Buf, BufMut, Bytes, BytesMut},
     codec::{Decoder, Encoder, FramedRead, FramedWrite},
 };
+
+// === Errors === //
+
+#[derive(Debug, Error)]
+pub enum CodecError {
+    #[error(transparent)]
+    Io(io::Error),
+    #[error(transparent)]
+    Serde(SerdeError),
+}
+
+#[derive(Debug, Error)]
+pub enum SerdeError {
+    #[error("packet length too large ({recv} > {max})")]
+    FrameTooBig { recv: u32, max: u32 },
+    #[error("malformed message")]
+    BadMsg(postcard::Error),
+    #[error("message too large")]
+    MsgTooLarge,
+}
+
+impl From<io::Error> for CodecError {
+    fn from(err: io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+impl From<SerdeError> for CodecError {
+    fn from(err: SerdeError) -> Self {
+        Self::Serde(err)
+    }
+}
 
 // === Wrappers === //
 
@@ -22,13 +56,16 @@ pub fn wrap_stream_rx<T: AsyncRead>(rx: T, max_packet_size: u32) -> FrameDecoder
 
 pub async fn recv_packet<P: DeserializeOwned>(
     decoder: &mut FrameDecoder<impl AsyncRead + Unpin>,
-) -> anyhow::Result<Option<P>> {
+) -> Result<Option<P>, CodecError> {
     let Some(packet) = tokio_stream::StreamExt::next(decoder).await else {
         return Ok(None);
     };
 
     let packet = packet?;
-    let packet = postcard::from_bytes(&packet)?;
+    let packet = match postcard::from_bytes(&packet) {
+        Ok(v) => v,
+        Err(err) => return Err(SerdeError::BadMsg(err).into()),
+    };
 
     Ok(Some(packet))
 }
@@ -36,20 +73,20 @@ pub async fn recv_packet<P: DeserializeOwned>(
 pub async fn feed_packet<P: serde::Serialize>(
     encoder: &mut FrameEncoder<impl AsyncWrite + Unpin>,
     packet: P,
-) -> anyhow::Result<()> {
+) -> Result<(), CodecError> {
     SinkExt::feed(encoder, packet).await
 }
 
 pub async fn send_packet<P: serde::Serialize>(
     encoder: &mut FrameEncoder<impl AsyncWrite + Unpin>,
     packet: P,
-) -> anyhow::Result<()> {
+) -> Result<(), CodecError> {
     SinkExt::send(encoder, packet).await
 }
 
 pub async fn flush_packets(
     encoder: &mut FrameEncoder<impl AsyncWrite + Unpin>,
-) -> anyhow::Result<()> {
+) -> Result<(), CodecError> {
     SinkExt::<()>::flush(encoder).await
 }
 
@@ -62,9 +99,9 @@ pub struct DecodeCodec {
 
 impl Decoder for DecodeCodec {
     type Item = Bytes;
-    type Error = anyhow::Error;
+    type Error = CodecError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> anyhow::Result<Option<Self::Item>> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, CodecError> {
         if src.len() < 4 {
             return Ok(None);
         }
@@ -78,10 +115,11 @@ impl Decoder for DecodeCodec {
         tracing::trace!("decoding packet with size {len}");
 
         if len > self.max_packet_size {
-            anyhow::bail!(
-                "packet too large (got size {len}, which is greater than {})",
-                self.max_packet_size
-            );
+            return Err(SerdeError::FrameTooBig {
+                recv: len,
+                max: self.max_packet_size,
+            }
+            .into());
         }
 
         let len = len as usize;
@@ -101,7 +139,7 @@ impl Decoder for DecodeCodec {
 pub struct EncodeCodec;
 
 impl<I: serde::Serialize> Encoder<I> for EncodeCodec {
-    type Error = anyhow::Error;
+    type Error = CodecError;
 
     fn encode(&mut self, item: I, dst: &mut BytesMut) -> Result<(), Self::Error> {
         dst.put_u32(0xABADF00D);
@@ -114,9 +152,14 @@ impl<I: serde::Serialize> Encoder<I> for EncodeCodec {
             }
         }
 
-        postcard::to_extend(&item, ExtendAdapter(dst))?;
+        if let Err(err) = postcard::to_extend(&item, ExtendAdapter(dst)) {
+            return Err(SerdeError::BadMsg(err).into());
+        };
 
-        let len = u32::try_from(dst.len() - 4).context("packet too large")?;
+        let Ok(len) = u32::try_from(dst.len() - 4) else {
+            return Err(SerdeError::MsgTooLarge.into());
+        };
+
         dst[0..4].copy_from_slice(&len.to_be_bytes());
 
         tracing::trace!("encoded packet with size {len:?}");
