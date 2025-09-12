@@ -71,6 +71,7 @@ async fn main_loop() {
             ev = window.next_event().fuse() => {
                 match ev {
                     WindowEvent::Redraw(mut fb) => {
+                        tracing::info!("Ping: {:?}s", socket.ping());
                         fb.clear(Bgra8::RED);
 
                         fb.draw(

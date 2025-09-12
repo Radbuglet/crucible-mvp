@@ -101,6 +101,15 @@ impl NetworkBindingsHandle {
             ret.finish(cx, &())
         })?;
 
+        linker.define_wsl(abi::LOGIN_SOCKET_GET_PING, move |cx, args, ret| {
+            let w = cx.w();
+
+            let handle = self.r(w).handles.get(args.raw)?.as_weak();
+            let latency = handle.latency(w);
+
+            ret.finish(cx, &latency)
+        })?;
+
         linker.define_wsl(abi::LOGIN_SOCKET_CLOSE, move |cx, args, ret| {
             _ = self.m(cx.w()).handles.remove(args.raw)?;
 

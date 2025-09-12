@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering::*},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering::*},
+    },
+    time::{Duration, Instant},
 };
 
 use anyhow::Context as _;
@@ -231,7 +234,26 @@ impl Worker {
             .await?;
 
         // Start ping task
-        // TODO
+        tokio::spawn({
+            let conn = conn.clone();
+
+            async move {
+                if let Err(err) = Self::process_ping(conn, latency).await {
+                    match err.downcast_ref::<quinn::ConnectionError>() {
+                        Some(
+                            quinn::ConnectionError::ApplicationClosed(_)
+                            | quinn::ConnectionError::ConnectionClosed(_),
+                        ) => {
+                            // (fallthrough)
+                        }
+                        _ => {
+                            tracing::error!("ping task crashed: {err}");
+                        }
+                    }
+                }
+            }
+            .in_current_span()
+        });
 
         // Start main loop
         tracing::info!("connected to remote host");
@@ -261,6 +283,44 @@ impl Worker {
         }
 
         tracing::info!("closed connection");
+
+        Ok(())
+    }
+
+    async fn process_ping(conn: quinn::Connection, latency: Arc<AtomicU64>) -> anyhow::Result<()> {
+        let (stream_tx, stream_rx) = conn.open_bi().await?;
+        let mut stream_tx = FrameEncoder::new(stream_tx, EncodeCodec);
+        let mut stream_rx = FrameDecoder::new(
+            stream_rx,
+            DecodeCodec {
+                max_packet_size: u16::MAX as u32,
+            },
+        );
+
+        let mut last_send = Instant::now();
+
+        // Transition to the ping state, effectively sending out a ping request.
+        send_packet(&mut stream_tx, game::SbHello1::Ping).await?;
+
+        loop {
+            // Wait for pong.
+            if recv_packet::<game::CbPingRes>(&mut stream_rx)
+                .await?
+                .is_none()
+            {
+                break;
+            }
+
+            // Write out latency.
+            latency.store(last_send.elapsed().as_secs_f64().to_bits(), Relaxed);
+
+            // Wait for a new period.
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+
+            // Send a new ping.
+            last_send = Instant::now();
+            send_packet(&mut stream_tx, game::SbPingReq).await?;
+        }
 
         Ok(())
     }
