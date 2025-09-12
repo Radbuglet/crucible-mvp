@@ -133,7 +133,7 @@ impl GlobalState {
                             ContentConfig::SelfHosted(..) => None,
                             ContentConfig::Content { server_url, .. } => Some(server_url.clone()),
                         },
-                        game_hash: self.content.index_hash,
+                        content_hash: self.content.index_hash,
                     },
                 )
                 .await?;

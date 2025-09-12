@@ -39,7 +39,7 @@ pub struct CbServerList1 {
     pub content_server: Option<String>,
 
     /// The hash of the game's blob.
-    pub game_hash: blake3::Hash,
+    pub content_hash: blake3::Hash,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

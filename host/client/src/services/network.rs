@@ -224,6 +224,8 @@ impl Worker {
             .next()
             .context("no server address found")?;
 
+        tracing::info!("connecting to {addr:?}");
+
         let conn = endpoint
             .connect_with(client_config, addr, &addr_name)?
             .await?;
@@ -232,6 +234,8 @@ impl Worker {
         // TODO
 
         // Start main loop
+        tracing::info!("connected to remote host");
+
         connect_promise.resolve(());
 
         let mut task_counter = 0;

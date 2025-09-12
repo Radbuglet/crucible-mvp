@@ -1,27 +1,31 @@
 use arid::{Handle, Object as _, Strong, W};
 use arid_entity::component;
 use crucible_abi as abi;
-use wasmlink_wasmtime::{WslLinker, WslLinkerExt};
+use crucible_protocol::game;
+use wasmlink_wasmtime::{WslLinker, WslLinkerExt, WslStoreExt};
 
 use crate::{
+    app::{AppEventProxy, create_main_thread_promise},
     services::network::{CertValidationMode, GameSocketHandle},
-    utils::{arena::GuestArena, promise::Promise},
+    utils::arena::GuestArena,
 };
 
 #[derive(Debug)]
 pub struct NetworkBindings {
     endpoint: quinn::Endpoint,
+    proxy: AppEventProxy,
     handles: GuestArena<Strong<GameSocketHandle>>,
 }
 
 component!(pub NetworkBindings);
 
 impl NetworkBindingsHandle {
-    pub fn new(w: W) -> anyhow::Result<Strong<Self>> {
+    pub fn new(proxy: AppEventProxy, w: W) -> anyhow::Result<Strong<Self>> {
         let endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())?;
 
         Ok(NetworkBindings {
             endpoint,
+            proxy,
             handles: GuestArena::default(),
         }
         .spawn(w))
@@ -33,18 +37,64 @@ impl NetworkBindingsHandle {
 
             let w = cx.w();
 
-            let callback = Promise::new(move |res| {
-                tracing::info!("Connected to remote host: {res:?}");
+            let handle = self.m(w).handles.next_handle()?;
 
-                // TODO: Invoke callback
-            });
+            let callback = create_main_thread_promise(
+                self.r(w).proxy.clone(),
+                move |app, _events, res: anyhow::Result<()>| {
+                    let init = app.init.as_mut().unwrap();
 
-            let gs = GameSocketHandle::new(
+                    init.store.run_wsl_root(&mut app.world, |cx| match res {
+                        Ok(()) => args
+                            .callback
+                            .call(cx, &Ok(abi::LoginSocketHandle { raw: handle })),
+                        Err(err) => args.callback.call(cx, &Err(&err.to_string())),
+                    })?;
+
+                    Ok(())
+                },
+            );
+
+            let socket = GameSocketHandle::new(
                 self.r(w).endpoint.clone(),
                 addr,
                 "localhost",
                 CertValidationMode::DontAuthenticate,
                 callback,
+                w,
+            );
+
+            self.m(w).handles.add(socket).unwrap();
+
+            ret.finish(cx, &())
+        })?;
+
+        linker.define_wsl(abi::LOGIN_SOCKET_GET_INFO, move |cx, args, ret| {
+            let w = cx.w();
+
+            let handle = self.r(w).handles.get(args.socket.raw)?.as_weak();
+
+            handle.info(
+                create_main_thread_promise(
+                    self.r(w).proxy.clone(),
+                    move |app, _events, res: anyhow::Result<game::CbServerList1>| {
+                        let init = app.init.as_mut().unwrap();
+
+                        init.store.run_wsl_root(&mut app.world, |cx| match res {
+                            Ok(info) => args.callback.call(
+                                cx,
+                                &Ok(abi::LoginServerInfo {
+                                    motd: &info.motd,
+                                    content_hash: abi::ContentHash(*info.content_hash.as_bytes()),
+                                    content_server: info.content_server.as_deref(),
+                                }),
+                            ),
+                            Err(err) => args.callback.call(cx, &Err(&err.to_string())),
+                        })?;
+
+                        Ok(())
+                    },
+                ),
                 w,
             );
 

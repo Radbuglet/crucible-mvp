@@ -1,13 +1,14 @@
-use std::{env, fs, sync::Arc};
+use std::{env, fmt, fs, sync::Arc};
 
 use anyhow::Context;
 use arid::{Strong, World};
 use arid_entity::EntityHandle;
 use futures::executor::block_on;
+use smallbox::{SmallBox, smallbox};
 use wasmlink_wasmtime::{WslLinker, WslStore, WslStoreExt, WslStoreState};
 use winit::{
     event::{KeyEvent, MouseButton, StartCause, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard,
     window::{WindowAttributes, WindowId},
 };
@@ -15,30 +16,78 @@ use winit::{
 use crate::{
     bindings::{env::EnvBindingsHandle, gfx::GfxBindingsHandle, network::NetworkBindingsHandle},
     services::window::{WindowManagerHandle, WindowStateHandle, create_gfx_context},
-    utils::winit::{FallibleApplicationHandler, run_app_fallible},
+    utils::{
+        promise::{Promise, PromiseCancelled},
+        winit::{FallibleApplicationHandler, run_app_fallible},
+    },
 };
 
-#[derive(Debug)]
-struct App {
-    world: World,
-    root: Strong<EntityHandle>,
-    engine: wasmtime::Engine,
-    module: wasmtime::Module,
-    init: Option<AppInitState>,
+pub type AppEventProxy = EventLoopProxy<MainThreadTask>;
+
+pub fn run_app() -> anyhow::Result<()> {
+    // Creating windowing services
+    tracing::info!("Setting up windowing and graphics contexts.");
+
+    let mut world = World::new();
+    let event_loop = EventLoop::<MainThreadTask>::with_user_event().build()?;
+    let event_proxy = event_loop.create_proxy();
+
+    let root = EntityHandle::new(&mut world);
+    root.with_label("root", &mut world);
+
+    // Setup WASM runtime
+    tracing::info!("Setting up WASM runtime.");
+    let engine = wasmtime::Engine::new(&wasmtime::Config::default())?;
+
+    // Load module
+    tracing::info!("Loading module.");
+
+    let module_path = env::args().nth(1).context("no module supplied")?;
+    let module = fs::read(&module_path)
+        .with_context(|| format!("failed to read module at `{module_path}`"))?;
+
+    let module = wasmtime::Module::new(&engine, module)?;
+
+    // Start main loop
+    tracing::info!("Starting main loop!");
+
+    run_app_fallible(
+        event_loop,
+        &mut App {
+            event_proxy,
+            world,
+            root,
+            engine,
+            module,
+            init: None,
+        },
+    )?;
+
+    Ok(())
 }
 
 #[derive(Debug)]
-struct AppInitState {
-    window_mgr: WindowManagerHandle,
-    env_bindings: EnvBindingsHandle,
-    gfx_bindings: GfxBindingsHandle,
-    net_bindings: NetworkBindingsHandle,
-    main_window: WindowStateHandle,
-    store: WslStore,
-    _instance: wasmtime::Instance,
+pub struct App {
+    pub event_proxy: AppEventProxy,
+    pub world: World,
+    pub root: Strong<EntityHandle>,
+    pub engine: wasmtime::Engine,
+    pub module: wasmtime::Module,
+    pub init: Option<AppInitState>,
 }
 
-impl FallibleApplicationHandler for App {
+#[derive(Debug)]
+pub struct AppInitState {
+    pub window_mgr: WindowManagerHandle,
+    pub env_bindings: EnvBindingsHandle,
+    pub gfx_bindings: GfxBindingsHandle,
+    pub _net_bindings: NetworkBindingsHandle,
+    pub main_window: WindowStateHandle,
+    pub store: WslStore,
+    pub _instance: wasmtime::Instance,
+}
+
+impl FallibleApplicationHandler<MainThreadTask> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
         let w = &mut self.world;
 
@@ -74,7 +123,10 @@ impl FallibleApplicationHandler for App {
 
             gfx_bindings.install(&mut linker)?;
 
-            let net_bindings = self.root.add(NetworkBindingsHandle::new(w)?, w);
+            let net_bindings = self
+                .root
+                .add(NetworkBindingsHandle::new(self.event_proxy.clone(), w)?, w);
+
             net_bindings.install(&mut linker)?;
 
             linker.define_unknown_imports_as_traps(&self.module)?;
@@ -105,7 +157,7 @@ impl FallibleApplicationHandler for App {
                 window_mgr: window_mgr.as_weak(),
                 env_bindings,
                 gfx_bindings,
-                net_bindings,
+                _net_bindings: net_bindings,
                 main_window,
                 store,
                 _instance: instance,
@@ -130,6 +182,14 @@ impl FallibleApplicationHandler for App {
         }
 
         Ok(())
+    }
+
+    fn user_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        task: MainThreadTask,
+    ) -> anyhow::Result<()> {
+        task.call(self, event_loop)
     }
 
     fn window_event(
@@ -316,42 +376,56 @@ impl FallibleApplicationHandler for App {
     }
 }
 
-pub fn run_app() -> anyhow::Result<()> {
-    // Creating windowing services
-    tracing::info!("Setting up windowing and graphics contexts.");
+pub fn create_main_thread_promise<T, E, F>(event_proxy: AppEventProxy, f: F) -> Promise<T, E>
+where
+    T: 'static + Send,
+    E: 'static + Send + From<PromiseCancelled>,
+    F: 'static + Send + FnOnce(&mut App, &ActiveEventLoop, Result<T, E>) -> anyhow::Result<()>,
+{
+    Promise::new(move |res| {
+        _ = event_proxy.send_event(MainThreadTask::new(move |app, event_loop| {
+            f(app, event_loop, res)
+        }));
+    })
+}
 
-    let mut world = World::new();
-    let event_loop = EventLoop::new()?;
+pub struct MainThreadTask {
+    #[expect(clippy::type_complexity)]
+    task: SmallBox<dyn Send + FnMut(&mut App, &ActiveEventLoop) -> anyhow::Result<()>, [usize; 4]>,
+}
 
-    let root = EntityHandle::new(&mut world);
-    root.with_label("root", &mut world);
+impl fmt::Debug for MainThreadTask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MainThreadTask").finish_non_exhaustive()
+    }
+}
 
-    // Setup WASM runtime
-    tracing::info!("Setting up WASM runtime.");
-    let engine = wasmtime::Engine::new(&wasmtime::Config::default())?;
+impl<F> From<F> for MainThreadTask
+where
+    F: 'static + Send + FnOnce(&mut App, &ActiveEventLoop) -> anyhow::Result<()>,
+{
+    fn from(f: F) -> Self {
+        Self::new(f)
+    }
+}
 
-    // Load module
-    tracing::info!("Loading module.");
+impl MainThreadTask {
+    pub fn new<F>(f: F) -> Self
+    where
+        F: 'static + Send + FnOnce(&mut App, &ActiveEventLoop) -> anyhow::Result<()>,
+    {
+        let mut f = Some(f);
 
-    let module_path = env::args().nth(1).context("no module supplied")?;
-    let module = fs::read(&module_path)
-        .with_context(|| format!("failed to read module at `{module_path}`"))?;
+        Self {
+            task: smallbox!(
+                move |app: &mut App, event_loop: &ActiveEventLoop| f.take().unwrap()(
+                    app, event_loop
+                )
+            ),
+        }
+    }
 
-    let module = wasmtime::Module::new(&engine, module)?;
-
-    // Start main loop
-    tracing::info!("Starting main loop!");
-
-    run_app_fallible(
-        event_loop,
-        &mut App {
-            world,
-            root,
-            engine,
-            module,
-            init: None,
-        },
-    )?;
-
-    Ok(())
+    pub fn call(mut self, app: &mut App, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
+        (self.task)(app, event_loop)
+    }
 }

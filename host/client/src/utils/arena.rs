@@ -9,23 +9,32 @@ pub struct GuestArena<T> {
 }
 
 impl<T> GuestArena<T> {
+    pub fn next_handle(&self) -> anyhow::Result<u32> {
+        match self.free.last() {
+            Some(handle) => Ok(*handle),
+            None => self.last_slot_handle(),
+        }
+    }
+
     pub fn add(&mut self, value: T) -> anyhow::Result<u32> {
         if let Some(handle) = self.free.pop() {
-            self.slots[Self::handle_to_idx(handle)?] = Some(value);
+            self.slots[(handle - 1) as usize] = Some(value);
 
             return Ok(handle);
         }
 
-        let idx = self
-            .slots
-            .len()
-            .checked_add(1)
-            .and_then(|v| u32::try_from(v).ok())
-            .context("too many slots")?;
-
+        let idx = self.last_slot_handle()?;
         self.slots.push(Some(value));
 
         Ok(idx)
+    }
+
+    fn last_slot_handle(&self) -> anyhow::Result<u32> {
+        self.slots
+            .len()
+            .checked_add(1)
+            .and_then(|v| u32::try_from(v).ok())
+            .context("too many slots")
     }
 
     fn handle_to_idx(handle: u32) -> anyhow::Result<usize> {
