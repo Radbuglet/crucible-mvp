@@ -116,6 +116,7 @@ impl WindowManagerHandle {
             manager: self,
             window,
             surface,
+            surface_texture: None,
         }
         .spawn(w);
 
@@ -142,6 +143,7 @@ pub struct WindowState {
     manager: WindowManagerHandle,
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
+    surface_texture: Option<wgpu::SurfaceTexture>,
 }
 
 component!(pub WindowState);
@@ -155,11 +157,11 @@ impl WindowStateHandle {
         is_in_live_resize(self.window(w))
     }
 
-    pub fn redraw(
-        self,
-        f: impl FnOnce(&wgpu::SurfaceTexture, W) -> anyhow::Result<()>,
-        w: W,
-    ) -> anyhow::Result<()> {
+    pub fn start_redraw(self, w: W) -> anyhow::Result<Option<wgpu::Texture>> {
+        if self.r(w).surface_texture.is_some() {
+            return Ok(None);
+        }
+
         let gfx = self.r(w).manager.r(w).gfx.clone();
         let window_size = self.window(w).inner_size();
 
@@ -177,14 +179,20 @@ impl WindowStateHandle {
             },
         );
 
-        let texture = self.r(w).surface.get_current_texture()?;
+        let fb = self.r(w).surface.get_current_texture()?;
+        let texture = fb.texture.clone();
+        self.m(w).surface_texture = Some(fb);
 
-        f(&texture, w)?;
+        Ok(Some(texture))
+    }
+
+    pub fn end_redraw(self, w: W) {
+        let fb = self.m(w).surface_texture.take().unwrap();
+        let gfx = self.r(w).manager.r(w).gfx.clone();
 
         self.r(w).manager.m(w).renderer.submit(&gfx.queue);
-        texture.present();
 
-        Ok(())
+        fb.present();
     }
 }
 

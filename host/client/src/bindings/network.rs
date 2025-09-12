@@ -101,6 +101,12 @@ impl NetworkBindingsHandle {
             ret.finish(cx, &())
         })?;
 
+        linker.define_wsl(abi::LOGIN_SOCKET_CLOSE, move |cx, args, ret| {
+            _ = self.m(cx.w()).handles.remove(args.raw)?;
+
+            ret.finish(cx, &())
+        })?;
+
         Ok(())
     }
 }

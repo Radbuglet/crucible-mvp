@@ -31,8 +31,9 @@ async fn main_loop() {
     let mut timer = IntervalTimer::new(1. / 60.);
 
     let socket = LoginSocket::connect("127.0.0.1:8080").await.unwrap();
+    let info = socket.info().await.unwrap();
 
-    tracing::info!("{:#?}", socket.info().await.unwrap());
+    tracing::info!("{:#?}", info);
 
     let my_texture = CpuTexture::from_rgba8(
         image::load_from_memory(include_bytes!("demo1.png"))

@@ -2,6 +2,8 @@ use futures::channel::oneshot;
 use thiserror::Error;
 use wasmlink::{GuestStrRef, OwnedGuestClosure, bind_port};
 
+use crate::base::task::wake_executor;
+
 #[derive(Debug, Clone, Error)]
 #[error("{msg}")]
 pub struct LoginSocketError {
@@ -30,7 +32,8 @@ impl LoginSocket {
                         Ok(handle) => Ok(LoginSocket { handle }),
                         Err(msg) => Err(LoginSocketError { msg: msg.decode() }),
                     })
-                    .unwrap()
+                    .unwrap();
+                    wake_executor();
                 },
             );
 
@@ -71,7 +74,8 @@ impl LoginSocket {
                     }),
                     Err(msg) => Err(LoginSocketError { msg: msg.decode() }),
                 })
-                .unwrap()
+                .unwrap();
+                wake_executor();
             },
         );
 

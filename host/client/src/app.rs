@@ -212,27 +212,26 @@ impl FallibleApplicationHandler<MainThreadTask> for App {
 
                 let window = init.window_mgr.lookup(window_id, w);
 
-                window.redraw(
-                    |fb, w| -> anyhow::Result<()> {
-                        let handle = init.gfx_bindings.create_texture(fb.texture.clone(), w)?;
+                let Some(texture) = window.start_redraw(w)? else {
+                    return Ok(());
+                };
 
-                        init.store.run_wsl_root(w, |cx| {
-                            cbs.redraw_requested.call(
-                                cx,
-                                &crucible_abi::RedrawRequestedArgs {
-                                    fb: crucible_abi::GpuTextureHandle { raw: handle },
-                                    size: crucible_abi::UVec2 {
-                                        x: fb.texture.width(),
-                                        y: fb.texture.height(),
-                                    },
-                                },
-                            )
-                        })?;
+                let handle = init
+                    .gfx_bindings
+                    .create_texture(texture.clone(), Some(window), w)?;
 
-                        Ok(())
-                    },
-                    w,
-                )?;
+                init.store.run_wsl_root(w, |cx| {
+                    cbs.redraw_requested.call(
+                        cx,
+                        &crucible_abi::RedrawRequestedArgs {
+                            fb: crucible_abi::GpuTextureHandle { raw: handle },
+                            size: crucible_abi::UVec2 {
+                                x: texture.width(),
+                                y: texture.height(),
+                            },
+                        },
+                    )
+                })?;
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let Some(cbs) = init.gfx_bindings.user_callbacks(w) else {

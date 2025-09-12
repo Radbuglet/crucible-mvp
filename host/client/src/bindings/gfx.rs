@@ -1,20 +1,29 @@
 use std::mem;
 
-use arid::{Handle, Object, Strong, W, Wr};
+use arid::{Handle, MayDangle, Object, Strong, W, Wr};
 use arid_entity::component;
 use crucible_abi as abi;
 use glam::Affine2;
 use wasmlink::HostClosure;
 use wasmlink_wasmtime::{WslLinker, WslLinkerExt};
 
-use crate::{services::window::WindowManagerHandle, utils::arena::GuestArena};
+use crate::{
+    services::window::{WindowManagerHandle, WindowStateHandle},
+    utils::arena::GuestArena,
+};
 
 #[derive(Debug)]
 pub struct GfxBindings {
     window_mgr: WindowManagerHandle,
-    handles: GuestArena<wgpu::Texture>,
+    handles: GuestArena<GfxTexture>,
     user_callbacks: Option<WindowCallbacks>,
     redraw_requested: bool,
+}
+
+#[derive(Debug)]
+struct GfxTexture {
+    wgpu: wgpu::Texture,
+    fb_owned_by: Option<MayDangle<WindowStateHandle>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -43,8 +52,16 @@ impl GfxBindingsHandle {
         self.r(w).user_callbacks
     }
 
-    pub fn create_texture(self, texture: wgpu::Texture, w: W) -> anyhow::Result<u32> {
-        self.m(w).handles.add(texture)
+    pub fn create_texture(
+        self,
+        texture: wgpu::Texture,
+        fb_owned_by: Option<WindowStateHandle>,
+        w: W,
+    ) -> anyhow::Result<u32> {
+        self.m(w).handles.add(GfxTexture {
+            wgpu: texture,
+            fb_owned_by: fb_owned_by.map(MayDangle::new),
+        })
     }
 
     #[must_use]
@@ -92,7 +109,7 @@ impl GfxBindingsHandle {
                 .renderer_mut(w)
                 .create_texture(size.x, size.y);
 
-            let handle = self.m(w).handles.add(texture)?;
+            let handle = self.create_texture(texture, None, w)?;
 
             ret.finish(cx, &abi::GpuTextureHandle { raw: handle })
         })?;
@@ -100,7 +117,7 @@ impl GfxBindingsHandle {
         linker.define_wsl(abi::GPU_CLEAR_TEXTURE, move |cx, args, ret| {
             let w = cx.w();
 
-            let texture = self.r(w).handles.get(args.handle.raw)?.clone();
+            let texture = self.r(w).handles.get(args.handle.raw)?.wgpu.clone();
 
             self.r(w).window_mgr.renderer_mut(w).clear_texture(
                 &texture,
@@ -121,7 +138,7 @@ impl GfxBindingsHandle {
 
             let w = cx.w();
 
-            let texture = self.r(w).handles.get(args.handle.raw)?.clone();
+            let texture = self.r(w).handles.get(args.handle.raw)?.wgpu.clone();
 
             self.r(w).window_mgr.renderer_mut(w).upload_texture(
                 &texture,
@@ -139,11 +156,11 @@ impl GfxBindingsHandle {
             let w = cx.w();
 
             let src_texture = match args.src_handle {
-                Some(v) => Some(self.r(w).handles.get(v.raw)?.clone()),
+                Some(v) => Some(self.r(w).handles.get(v.raw)?.wgpu.clone()),
                 None => None,
             };
 
-            let dst_texture = self.r(w).handles.get(args.dst_handle.raw)?.clone();
+            let dst_texture = self.r(w).handles.get(args.dst_handle.raw)?.wgpu.clone();
 
             self.r(w).window_mgr.renderer_mut(w).draw_texture(
                 &dst_texture,
@@ -158,7 +175,14 @@ impl GfxBindingsHandle {
         })?;
 
         linker.define_wsl(abi::GPU_DESTROY_TEXTURE, move |cx, args, ret| {
-            self.m(cx.w()).handles.remove(args.raw)?;
+            let w = cx.w();
+            let texture = self.m(w).handles.remove(args.raw)?;
+
+            if let Some(fb_owned_by) = texture.fb_owned_by
+                && let Some(fb_owned_by) = fb_owned_by.get(w)
+            {
+                fb_owned_by.end_redraw(w);
+            }
 
             ret.finish(cx, &())
         })?;

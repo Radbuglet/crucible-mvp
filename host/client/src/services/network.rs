@@ -260,7 +260,7 @@ impl Worker {
             task_counter += 1;
         }
 
-        // We were the last peer to receive data so we can drop the socket immediately.
+        tracing::info!("closed connection");
 
         Ok(())
     }
