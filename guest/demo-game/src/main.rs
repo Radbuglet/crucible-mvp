@@ -49,21 +49,25 @@ async fn main_loop() {
         futures::select! {
             (times_ticked, _alpha) = timer.next().fuse() => {
                 for _ in 0..times_ticked.get() {
+                    let mut heading = Vec2::ZERO;
+
                     if keys_down.contains(&KeyCode::KeyA) {
-                        pos += Vec2::NEG_X;
+                        heading += Vec2::NEG_X;
                     }
 
                     if keys_down.contains(&KeyCode::KeyD) {
-                        pos += Vec2::X;
+                        heading += Vec2::X;
                     }
 
                     if keys_down.contains(&KeyCode::KeyW) {
-                        pos += Vec2::NEG_Y;
+                        heading += Vec2::NEG_Y;
                     }
 
                     if keys_down.contains(&KeyCode::KeyS) {
-                        pos += Vec2::Y;
+                        heading += Vec2::Y;
                     }
+
+                    pos += heading.normalize_or_zero() * timer.interval() as f32 * 500.;
                 }
 
                 window.request_redraw();
@@ -77,7 +81,7 @@ async fn main_loop() {
                         fb.draw(
                             GpuDrawArgs::new()
                                 .textured(&my_texture)
-                                .scale(Vec2::splat(500.))
+                                .scale(Vec2::splat(50.))
                                 .translate(pos),
                         );
                     }

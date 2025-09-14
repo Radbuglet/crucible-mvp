@@ -117,6 +117,11 @@ impl IntervalTimer {
     }
 
     #[must_use]
+    pub fn interval(&self) -> f64 {
+        self.interval
+    }
+
+    #[must_use]
     pub fn unprocessed(&self) -> f64 {
         (current_time() - self.last_complete) / self.interval
     }

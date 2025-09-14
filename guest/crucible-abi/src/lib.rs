@@ -7,6 +7,9 @@ pub use self::gpu::*;
 mod math;
 pub use self::math::*;
 
+mod network;
+pub use self::network::*;
+
 mod shell;
 pub use self::shell::*;
 
