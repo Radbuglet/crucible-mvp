@@ -6,7 +6,7 @@ use wasmlink_wasmtime::{WslLinker, WslLinkerExt, WslStoreExt};
 
 use crate::{
     app::{AppEventProxy, create_main_thread_promise},
-    services::network::{CertValidationMode, GameSocketHandle},
+    services::network::{CertValidationMode, LoginSocketHandle},
     utils::arena::GuestArena,
 };
 
@@ -14,7 +14,7 @@ use crate::{
 pub struct NetworkBindings {
     endpoint: quinn::Endpoint,
     proxy: AppEventProxy,
-    handles: GuestArena<Strong<GameSocketHandle>>,
+    handles: GuestArena<Strong<LoginSocketHandle>>,
 }
 
 component!(pub NetworkBindings);
@@ -55,7 +55,7 @@ impl NetworkBindingsHandle {
                 },
             );
 
-            let socket = GameSocketHandle::new(
+            let socket = LoginSocketHandle::new(
                 self.r(w).endpoint.clone(),
                 addr,
                 "localhost",
@@ -101,17 +101,27 @@ impl NetworkBindingsHandle {
             ret.finish(cx, &())
         })?;
 
-        linker.define_wsl(abi::LOGIN_SOCKET_GET_PING, move |cx, args, ret| {
+        linker.define_wsl(abi::LOGIN_SOCKET_GET_RTT, move |cx, args, ret| {
             let w = cx.w();
 
             let handle = self.r(w).handles.get(args.raw)?.as_weak();
-            let latency = handle.latency(w);
+            let rtt = handle.rtt(w);
 
-            ret.finish(cx, &latency)
+            ret.finish(cx, &rtt)
         })?;
 
         linker.define_wsl(abi::LOGIN_SOCKET_CLOSE, move |cx, args, ret| {
             _ = self.m(cx.w()).handles.remove(args.raw)?;
+
+            ret.finish(cx, &())
+        })?;
+
+        linker.define_wsl(abi::LOGIN_SOCKET_PLAY, move |cx, args, ret| {
+            let w = cx.w();
+
+            let handle = self.r(w).handles.get(args.socket.raw)?.as_weak();
+
+            // TODO
 
             ret.finish(cx, &())
         })?;

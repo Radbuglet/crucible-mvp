@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SbHello1 {
     /// Transitions the socket to the `Ping` state. Replies immediately with a [`CbPingRes`] packet.
-    /// Used to both keep the socket alive and measure latency.
+    /// Used to both keep the socket alive and measure RTT.
     Ping,
 
     /// Replies with [`CbServerList1`] and closes the stream.

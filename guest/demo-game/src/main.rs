@@ -35,6 +35,8 @@ async fn main_loop() {
 
     tracing::info!("{:#?}", info);
 
+    let socket = socket.play(info.content_hash).await.unwrap().unwrap();
+
     let my_texture = CpuTexture::from_rgba8(
         image::load_from_memory(include_bytes!("demo1.png"))
             .unwrap()
@@ -75,7 +77,7 @@ async fn main_loop() {
             ev = window.next_event().fuse() => {
                 match ev {
                     WindowEvent::Redraw(mut fb) => {
-                        tracing::info!("Ping: {:?}s", socket.ping());
+                        tracing::info!("Ping: {:?}s", socket.rtt());
                         fb.clear(Bgra8::RED);
 
                         fb.draw(

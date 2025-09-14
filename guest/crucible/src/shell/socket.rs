@@ -1,8 +1,9 @@
+use crucible_abi as abi;
 use futures::channel::oneshot;
 use thiserror::Error;
 use wasmlink::{GuestStrRef, OwnedGuestClosure, bind_port};
 
-use crate::base::task::wake_executor;
+use crate::{base::task::wake_executor, net::client::GameSocket};
 
 #[derive(Debug, Clone, Error)]
 #[error("{msg}")]
@@ -12,32 +13,30 @@ pub struct LoginSocketError {
 
 #[derive(Debug)]
 pub struct LoginSocket {
-    handle: crucible_abi::LoginSocketHandle,
+    handle: abi::LoginSocketHandle,
 }
 
 impl LoginSocket {
     pub async fn connect(addr: &str) -> Result<Self, LoginSocketError> {
         bind_port! {
-            fn [crucible_abi::LOGIN_SOCKET_CONNECT] "crucible".login_socket_connect(
-                crucible_abi::LoginSocketConnectArgs
+            fn [abi::LOGIN_SOCKET_CONNECT] "crucible".login_socket_connect(
+                abi::LoginSocketConnectArgs
             );
         }
 
         let (tx, rx) = oneshot::channel();
 
         let callback =
-            OwnedGuestClosure::<Result<crucible_abi::LoginSocketHandle, String>>::new_once(
-                move |res| {
-                    tx.send(match res.decode() {
-                        Ok(handle) => Ok(LoginSocket { handle }),
-                        Err(msg) => Err(LoginSocketError { msg: msg.decode() }),
-                    })
-                    .unwrap();
-                    wake_executor();
-                },
-            );
+            OwnedGuestClosure::<Result<abi::LoginSocketHandle, String>>::new_once(move |res| {
+                tx.send(match res.decode() {
+                    Ok(handle) => Ok(LoginSocket { handle }),
+                    Err(msg) => Err(LoginSocketError { msg: msg.decode() }),
+                })
+                .unwrap();
+                wake_executor();
+            });
 
-        login_socket_connect(&crucible_abi::LoginSocketConnectArgs {
+        login_socket_connect(&abi::LoginSocketConnectArgs {
             addr: GuestStrRef::new(addr),
             callback: callback.handle(),
         });
@@ -45,27 +44,27 @@ impl LoginSocket {
         rx.await.unwrap()
     }
 
-    pub fn ping(&self) -> Option<f64> {
+    pub fn rtt(&self) -> Option<f64> {
         bind_port! {
-            fn [crucible_abi::LOGIN_SOCKET_GET_PING] "crucible".login_socket_get_ping(
-                crucible_abi::LoginSocketHandle
+            fn [abi::LOGIN_SOCKET_GET_RTT] "crucible".login_socket_get_rtt(
+                abi::LoginSocketHandle
             ) -> Option<f64>;
         }
 
-        login_socket_get_ping(&self.handle).decode()
+        login_socket_get_rtt(&self.handle).decode()
     }
 
     pub async fn info(&self) -> Result<LoginServerInfo, LoginSocketError> {
         bind_port! {
-            fn [crucible_abi::LOGIN_SOCKET_GET_INFO] "crucible".login_socket_get_info(
-                crucible_abi::LoginSocketGetInfoArgs
+            fn [abi::LOGIN_SOCKET_GET_INFO] "crucible".login_socket_get_info(
+                abi::LoginSocketGetInfoArgs
             );
         }
 
         let (tx, rx) = oneshot::channel();
 
-        let callback = OwnedGuestClosure::<Result<crucible_abi::LoginServerInfo, String>>::new_once(
-            move |res| {
+        let callback =
+            OwnedGuestClosure::<Result<abi::LoginServerInfo, String>>::new_once(move |res| {
                 tx.send(match res.decode() {
                     Ok(info) => Ok(LoginServerInfo {
                         motd: info.motd.decode(),
@@ -76,11 +75,39 @@ impl LoginSocket {
                 })
                 .unwrap();
                 wake_executor();
+            });
+
+        login_socket_get_info(&abi::LoginSocketGetInfoArgs {
+            socket: self.handle,
+            callback: callback.handle(),
+        });
+
+        rx.await.unwrap()
+    }
+
+    pub async fn play(&self, hash: blake3::Hash) -> Result<Option<GameSocket>, LoginSocketError> {
+        bind_port! {
+            fn [abi::LOGIN_SOCKET_PLAY] "crucible".login_socket_play(
+                abi::LoginSocketPlayArgs
+            );
+        }
+
+        let (tx, rx) = oneshot::channel();
+
+        let callback = OwnedGuestClosure::<Result<Option<abi::GameSocketHandle>, String>>::new_once(
+            move |res| {
+                tx.send(match res.decode() {
+                    Ok(handle) => Ok(handle.decode().map(|handle| GameSocket { handle })),
+                    Err(msg) => Err(LoginSocketError { msg: msg.decode() }),
+                })
+                .unwrap();
+                wake_executor();
             },
         );
 
-        login_socket_get_info(&crucible_abi::LoginSocketGetInfoArgs {
+        login_socket_play(&abi::LoginSocketPlayArgs {
             socket: self.handle,
+            content_hash: abi::ContentHash(*hash.as_bytes()),
             callback: callback.handle(),
         });
 
@@ -91,8 +118,8 @@ impl LoginSocket {
 impl Drop for LoginSocket {
     fn drop(&mut self) {
         bind_port! {
-            fn [crucible_abi::LOGIN_SOCKET_CLOSE] "crucible".login_socket_close(
-                crucible_abi::LoginSocketHandle
+            fn [abi::LOGIN_SOCKET_CLOSE] "crucible".login_socket_close(
+                abi::LoginSocketHandle
             );
         }
 

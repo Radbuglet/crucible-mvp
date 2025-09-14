@@ -41,17 +41,17 @@ pub enum CertValidationMode {
     System,
 }
 
-// === GameSocket === //
+// === LoginSocket === //
 
 #[derive(Debug)]
-pub struct GameSocket {
+pub struct LoginSocket {
     tx: mpsc::UnboundedSender<WorkerReq>,
-    latency: Arc<AtomicU64>,
+    rtt: Arc<AtomicU64>,
 }
 
-component!(pub GameSocket);
+component!(pub LoginSocket);
 
-impl GameSocketHandle {
+impl LoginSocketHandle {
     pub fn new(
         endpoint: quinn::Endpoint,
         addr: impl 'static + Send + ToSocketAddrs,
@@ -59,18 +59,18 @@ impl GameSocketHandle {
         validation_mode: CertValidationMode,
         connect_promise: NetworkPromise<()>,
         w: W,
-    ) -> Strong<GameSocketHandle> {
+    ) -> Strong<LoginSocketHandle> {
         let addr_name = addr_name.into();
         let span = info_span!("net worker", name = addr_name.clone());
 
         let (tx, rx) = mpsc::unbounded_channel();
-        let latency = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
+        let rtt = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
 
         let worker = Worker {
             endpoint,
             addr_name,
             validation_mode,
-            latency: latency.clone(),
+            rtt: rtt.clone(),
             rx,
             connect_promise,
         };
@@ -84,17 +84,44 @@ impl GameSocketHandle {
             .instrument(span),
         );
 
-        GameSocket { tx, latency }.spawn(w)
+        LoginSocket { tx, rtt }.spawn(w)
     }
 
-    pub fn latency(self, w: Wr) -> Option<f64> {
-        let latency = f64::from_bits(self.r(w).latency.load(Relaxed));
+    pub fn rtt(self, w: Wr) -> Option<f64> {
+        let rtt = f64::from_bits(self.r(w).rtt.load(Relaxed));
 
-        (!latency.is_nan()).then_some(latency)
+        (!rtt.is_nan()).then_some(rtt)
     }
 
     pub fn info(self, callback: NetworkPromise<game::CbServerList1>, w: Wr) {
         _ = self.r(w).tx.send(WorkerReq::GetInfo { callback });
+    }
+
+    // pub fn play(self, callback: NetworkPromise<game::CbServerList1>, w: Wr) {
+    //     _ = self.r(w).tx.send(WorkerReq::GetInfo { callback });
+    // }
+}
+
+// === GameSocket === //
+
+#[derive(Debug)]
+pub struct GameSocket {
+    owner: Strong<LoginSocketHandle>,
+}
+
+component!(pub GameSocket);
+
+impl GameSocketHandle {
+    pub fn owner(self, w: Wr) -> LoginSocketHandle {
+        self.r(w).owner.as_weak()
+    }
+
+    pub fn send_msg(self, data: Vec<u8>, w: W) {
+        todo!()
+    }
+
+    pub fn recv_msg(self, w: W) {
+        todo!()
     }
 }
 
@@ -104,7 +131,7 @@ struct Worker {
     endpoint: quinn::Endpoint,
     addr_name: String,
     validation_mode: CertValidationMode,
-    latency: Arc<AtomicU64>,
+    rtt: Arc<AtomicU64>,
     rx: mpsc::UnboundedReceiver<WorkerReq>,
     connect_promise: NetworkPromise<()>,
 }
@@ -126,7 +153,7 @@ impl Worker {
             endpoint,
             addr_name,
             validation_mode: cert_mode,
-            latency,
+            rtt,
             mut rx,
             connect_promise,
         } = self;
@@ -238,7 +265,7 @@ impl Worker {
             let conn = conn.clone();
 
             async move {
-                if let Err(err) = Self::process_ping(conn, latency).await {
+                if let Err(err) = Self::process_ping(conn, rtt).await {
                     match err.downcast_ref::<quinn::ConnectionError>() {
                         Some(
                             quinn::ConnectionError::ApplicationClosed(_)
@@ -287,7 +314,7 @@ impl Worker {
         Ok(())
     }
 
-    async fn process_ping(conn: quinn::Connection, latency: Arc<AtomicU64>) -> anyhow::Result<()> {
+    async fn process_ping(conn: quinn::Connection, rtt: Arc<AtomicU64>) -> anyhow::Result<()> {
         let (stream_tx, stream_rx) = conn.open_bi().await?;
         let mut stream_tx = FrameEncoder::new(stream_tx, EncodeCodec);
         let mut stream_rx = FrameDecoder::new(
@@ -311,8 +338,8 @@ impl Worker {
                 break;
             }
 
-            // Write out latency.
-            latency.store(last_send.elapsed().as_secs_f64().to_bits(), Relaxed);
+            // Write out RTT.
+            rtt.store(last_send.elapsed().as_secs_f64().to_bits(), Relaxed);
 
             // Wait for a new period.
             tokio::time::sleep(Duration::from_millis(1000)).await;

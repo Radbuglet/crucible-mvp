@@ -1,19 +1,23 @@
 use bytemuck::{Pod, Zeroable};
 use wasmlink::{Marshal, PodMarshal, Port, marshal_struct, marshal_tagged_union};
 
+use crate::GameSocketHandle;
+
 // === Socket === //
 
 pub const LOGIN_SOCKET_CONNECT: Port<LoginSocketConnectArgs> =
     Port::new("crucible", "login_socket_connect");
 
-pub const LOGIN_SOCKET_GET_PING: Port<LoginSocketHandle, Option<f64>> =
-    Port::new("crucible", "login_socket_get_ping");
+pub const LOGIN_SOCKET_GET_RTT: Port<LoginSocketHandle, Option<f64>> =
+    Port::new("crucible", "login_socket_get_rtt");
 
 pub const LOGIN_SOCKET_GET_INFO: Port<LoginSocketGetInfoArgs> =
     Port::new("crucible", "login_socket_get_info");
 
 pub const LOGIN_SOCKET_DOWNLOAD: Port<LoginSocketDownloadArgs> =
     Port::new("crucible", "login_socket_download");
+
+pub const LOGIN_SOCKET_PLAY: Port<LoginSocketPlayArgs> = Port::new("crucible", "login_socket_play");
 
 pub const LOGIN_SOCKET_CLOSE: Port<LoginSocketHandle> = Port::new("crucible", "login_socket_close");
 
@@ -38,6 +42,12 @@ marshal_struct! {
         pub socket: LoginSocketHandle,
         pub content_hash: ContentHash,
         pub callback: fn(LoginSocketDownloadEvent),
+    }
+
+    pub struct LoginSocketPlayArgs {
+        pub socket: LoginSocketHandle,
+        pub content_hash: ContentHash,
+        pub callback: fn(Result<Option<GameSocketHandle>, String>),
     }
 }
 
