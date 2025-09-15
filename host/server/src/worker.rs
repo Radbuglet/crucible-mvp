@@ -172,12 +172,16 @@ impl GlobalState {
                 tx.get_mut().write_all(content).await?;
                 tx.get_mut().flush().await?;
             }
-            game::SbHello1::Play { game_hash } => {
-                tracing::info!("client wants to play game with hash {game_hash:?}");
+            game::SbHello1::PlayChecked { game_hash, id } => {
+                tracing::info!("client wants to play game with hash {game_hash:?} and ID {id:?}");
 
                 send_packet(&mut tx, game::CbPlayRes::Ready).await?;
             }
-            game::SbHello1::PlayNewStream => todo!(),
+            game::SbHello1::PlayUnchecked { id } => {
+                tracing::info!("client wants to play game with ID {id:?}");
+
+                send_packet(&mut tx, game::CbPlayRes::Ready).await?;
+            }
         }
 
         tx.get_mut().finish()?;

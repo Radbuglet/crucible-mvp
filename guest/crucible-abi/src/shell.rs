@@ -47,7 +47,7 @@ marshal_struct! {
     pub struct LoginSocketPlayArgs {
         pub socket: LoginSocketHandle,
         pub content_hash: ContentHash,
-        pub callback: fn(Result<Option<GameSocketHandle>, String>),
+        pub callback: fn(Result<Result<GameSocketHandle, ContentHash>, String>),
     }
 }
 

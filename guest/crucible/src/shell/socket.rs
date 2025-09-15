@@ -85,7 +85,10 @@ impl LoginSocket {
         rx.await.unwrap()
     }
 
-    pub async fn play(&self, hash: blake3::Hash) -> Result<Option<GameSocket>, LoginSocketError> {
+    pub async fn play(
+        &self,
+        hash: blake3::Hash,
+    ) -> Result<Result<GameSocket, blake3::Hash>, LoginSocketError> {
         bind_port! {
             fn [abi::LOGIN_SOCKET_PLAY] "crucible".login_socket_play(
                 abi::LoginSocketPlayArgs
@@ -94,16 +97,19 @@ impl LoginSocket {
 
         let (tx, rx) = oneshot::channel();
 
-        let callback = OwnedGuestClosure::<Result<Option<abi::GameSocketHandle>, String>>::new_once(
-            move |res| {
-                tx.send(match res.decode() {
-                    Ok(handle) => Ok(handle.decode().map(|handle| GameSocket { handle })),
-                    Err(msg) => Err(LoginSocketError { msg: msg.decode() }),
-                })
-                .unwrap();
-                wake_executor();
-            },
-        );
+        let callback = OwnedGuestClosure::<
+            Result<Result<abi::GameSocketHandle, abi::ContentHash>, String>,
+        >::new_once(move |res| {
+            tx.send(match res.decode() {
+                Ok(handle) => Ok(match handle.decode() {
+                    Ok(handle) => Ok(GameSocket { handle }),
+                    Err(hash) => Err(blake3::Hash::from_bytes(hash.0)),
+                }),
+                Err(msg) => Err(LoginSocketError { msg: msg.decode() }),
+            })
+            .unwrap();
+            wake_executor();
+        });
 
         login_socket_play(&abi::LoginSocketPlayArgs {
             socket: self.handle,

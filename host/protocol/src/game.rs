@@ -12,12 +12,11 @@ pub enum SbHello1 {
     /// Replies with [`CbDownloadRes`], the payload if applicable, and closes the stream.
     Download { hash: blake3::Hash },
 
-    /// Replies with [`CbPlayRes`] and then transparently . This can only happen once for a given connection.
-    Play { game_hash: blake3::Hash },
+    /// Replies with [`CbPlayRes`] and then transitions to a transparent game socket.
+    PlayChecked { game_hash: blake3::Hash, id: u64 },
 
-    /// If `Play` has already been received in another stream, `PlayNewStream` will transition the
-    /// current stream into
-    PlayNewStream,
+    /// Transitions to a transparent game socket.
+    PlayUnchecked { id: u64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

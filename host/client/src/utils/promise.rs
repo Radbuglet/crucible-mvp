@@ -43,7 +43,7 @@ where
         }
     }
 
-    pub fn resolve(self, value: T) {
+    pub fn accept(self, value: T) {
         self.finish(Ok(value));
     }
 
