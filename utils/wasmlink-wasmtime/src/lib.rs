@@ -3,8 +3,8 @@ use std::{fmt, marker::PhantomData, ptr::NonNull};
 use anyhow::Context;
 use arid::World;
 use wasmlink::{
-    BUILTIN_CLOSURE_INVOKE, BUILTIN_MEM_ALLOC, FfiPtr, GuestboundViewOf, HostContext,
-    HostboundViewOf, Marshal, Port, Strategy,
+    BUILTIN_CLOSURE_INVOKE, BUILTIN_MEM_ALLOC, FfiPtr, GuestInvokeContext, GuestMemory,
+    GuestMemoryContext, GuestboundViewOf, HostboundViewOf, Marshal, Port, Strategy,
 };
 
 // === Aliases === //
@@ -104,7 +104,22 @@ impl WslContext<'_> {
     }
 
     pub fn w(&mut self) -> &mut World {
-        unsafe { self.cx().data().world.expect("no world bound").as_mut() }
+        unsafe {
+            self.cx_mut()
+                .data_mut()
+                .world
+                .expect("no world bound")
+                .as_mut()
+        }
+    }
+
+    pub fn world_and_memory(&mut self) -> (&mut World, &mut GuestMemory) {
+        let main_memory = self.exports().memory;
+
+        let (memory, store) = main_memory.data_and_store_mut(self.cx_mut());
+        let world = unsafe { store.world.expect("no world bound").as_mut() };
+
+        (world, GuestMemory::wrap_mut(memory))
     }
 
     fn exports(&self) -> &WslExports {
@@ -116,15 +131,17 @@ impl WslContext<'_> {
     }
 }
 
-impl HostContext for WslContext<'_> {
-    fn guest_memory(&self) -> &[u8] {
+impl GuestMemoryContext for WslContext<'_> {
+    fn memory(&self) -> &[u8] {
         self.exports().memory.data(self.cx())
     }
 
-    fn guest_memory_mut(&mut self) -> &mut [u8] {
+    fn memory_mut(&mut self) -> &mut [u8] {
         self.exports().memory.clone().data_mut(self.cx_mut())
     }
+}
 
+impl GuestInvokeContext for WslContext<'_> {
     fn alloc(&mut self, align: u32, size: u32) -> anyhow::Result<FfiPtr<()>> {
         self.exports()
             .mem_alloc

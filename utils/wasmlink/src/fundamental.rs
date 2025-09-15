@@ -8,8 +8,8 @@ use bytemuck::Pod;
 use derive_where::derive_where;
 
 use crate::{
-    FfiPtr, FfiSlice, FfiSliceIndexable, HostContext, Marshal, Strategy, StrategyOf,
-    UnifiedStrategy, ffi_offset,
+    FfiPtr, FfiSlice, FfiSliceIndexable, GuestInvokeContext, GuestMemoryContext, Marshal, Strategy,
+    StrategyOf, UnifiedStrategy, ffi_offset,
     utils::{align_of_u32, size_of_u32},
 };
 
@@ -30,14 +30,14 @@ impl<T: Pod> Strategy for PodMarshal<T> {
     type GuestboundView<'a> = T;
 
     fn decode_hostbound(
-        cx: &impl HostContext,
+        cx: &(impl ?Sized + GuestMemoryContext),
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> anyhow::Result<Self::HostboundView> {
         ptr.read(cx).copied()
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostContext,
+        cx: &mut impl GuestInvokeContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> anyhow::Result<()> {
@@ -98,7 +98,7 @@ impl<T: ConvertMarshal> Strategy for ConvertMarshalStrategy<T> {
     type GuestboundView<'a> = T;
 
     fn decode_hostbound(
-        cx: &impl HostContext,
+        cx: &(impl ?Sized + GuestMemoryContext),
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> anyhow::Result<Self::HostboundView> {
         T::try_from_raw(T::Raw::decode_hostbound(
@@ -108,7 +108,7 @@ impl<T: ConvertMarshal> Strategy for ConvertMarshalStrategy<T> {
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostContext,
+        cx: &mut impl GuestInvokeContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> anyhow::Result<()> {
@@ -220,7 +220,7 @@ impl<T: Strategy> Strategy for Option<T> {
     type GuestboundView<'a> = Option<T::GuestboundView<'a>>;
 
     fn decode_hostbound(
-        cx: &impl HostContext,
+        cx: &(impl ?Sized + GuestMemoryContext),
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> anyhow::Result<Self::HostboundView> {
         let is_present = *ptr
@@ -242,7 +242,7 @@ impl<T: Strategy> Strategy for Option<T> {
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostContext,
+        cx: &mut impl GuestInvokeContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> anyhow::Result<()> {
@@ -346,7 +346,7 @@ impl<T: Strategy, E: Strategy> Strategy for Result<T, E> {
     type GuestboundView<'a> = Result<T::GuestboundView<'a>, E::GuestboundView<'a>>;
 
     fn decode_hostbound(
-        cx: &impl HostContext,
+        cx: &(impl ?Sized + GuestMemoryContext),
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> anyhow::Result<Self::HostboundView> {
         let is_ok = *ptr
@@ -387,7 +387,7 @@ impl<T: Strategy, E: Strategy> Strategy for Result<T, E> {
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostContext,
+        cx: &mut impl GuestInvokeContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> anyhow::Result<()> {
@@ -441,7 +441,10 @@ impl<T: Strategy> HostPtr_<T> {
         self.ptr
     }
 
-    pub fn decode(self, cx: &impl HostContext) -> anyhow::Result<T::HostboundView> {
+    pub fn decode(
+        self,
+        cx: &(impl ?Sized + GuestMemoryContext),
+    ) -> anyhow::Result<T::HostboundView> {
         T::decode_hostbound(cx, self.ptr)
     }
 }
@@ -458,7 +461,7 @@ impl<T: Strategy> Strategy for Box<T> {
     type GuestboundView<'a> = &'a T::GuestboundView<'a>;
 
     fn decode_hostbound(
-        cx: &impl HostContext,
+        cx: &(impl ?Sized + GuestMemoryContext),
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> anyhow::Result<Self::HostboundView> {
         Ok(HostPtr_ {
@@ -467,7 +470,7 @@ impl<T: Strategy> Strategy for Box<T> {
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostContext,
+        cx: &mut impl GuestInvokeContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> anyhow::Result<()> {
@@ -611,7 +614,7 @@ impl<T: Strategy> Strategy for Vec<T> {
     type GuestboundView<'a> = &'a [T::GuestboundView<'a>];
 
     fn decode_hostbound(
-        cx: &impl HostContext,
+        cx: &(impl ?Sized + GuestMemoryContext),
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> anyhow::Result<Self::HostboundView> {
         Ok(HostSlice_::new(
@@ -620,7 +623,7 @@ impl<T: Strategy> Strategy for Vec<T> {
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostContext,
+        cx: &mut impl GuestInvokeContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> anyhow::Result<()> {
@@ -722,7 +725,7 @@ impl HostStr {
         self.slice.len()
     }
 
-    pub fn read(self, cx: &impl HostContext) -> anyhow::Result<&str> {
+    pub fn read(self, cx: &(impl ?Sized + GuestMemoryContext)) -> anyhow::Result<&str> {
         std::str::from_utf8(self.slice.read(cx)?).context("invalid UTF-8 sequence")
     }
 }
@@ -739,14 +742,14 @@ impl Strategy for String {
     type GuestboundView<'a> = &'a str;
 
     fn decode_hostbound(
-        cx: &impl HostContext,
+        cx: &(impl ?Sized + GuestMemoryContext),
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> anyhow::Result<Self::HostboundView> {
         Ok(HostStr::new(*ptr.cast::<FfiSlice<u8>>().read(cx)?))
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostContext,
+        cx: &mut impl GuestInvokeContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> anyhow::Result<()> {

@@ -8,7 +8,8 @@ use std::{
 use derive_where::derive_where;
 
 use crate::{
-    FfiPtr, GuestboundOf, GuestboundViewOf, HostContext, Marshal, Strategy, StrategyOf,
+    FfiPtr, GuestInvokeContext, GuestMemoryContext, GuestboundOf, GuestboundViewOf, Marshal,
+    Strategy, StrategyOf,
     utils::{align_of_u32, is_wasm, size_of_u32},
 };
 
@@ -37,7 +38,7 @@ impl<I: Strategy> HostClosure_<I> {
 
     pub fn call(
         self,
-        cx: &mut impl HostContext,
+        cx: &mut impl GuestInvokeContext,
         arg: &GuestboundViewOf<'_, I>,
     ) -> anyhow::Result<()> {
         let arg_out = cx.alloc(
@@ -232,14 +233,14 @@ impl<I: Strategy> Strategy for fn(I) {
     type GuestboundView<'a> = HostClosure_<I>;
 
     fn decode_hostbound(
-        cx: &impl HostContext,
+        cx: &(impl ?Sized + GuestMemoryContext),
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> anyhow::Result<Self::HostboundView> {
         Ok(HostClosure_::new(*ptr.cast::<u64>().read(cx)?))
     }
 
     fn encode_guestbound(
-        cx: &mut impl HostContext,
+        cx: &mut impl GuestInvokeContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> anyhow::Result<()> {

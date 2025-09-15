@@ -14,14 +14,40 @@ pub type HostboundOf<'a, M> = <StrategyOf<M> as Strategy>::Hostbound<'a>;
 pub type HostboundViewOf<M> = <StrategyOf<M> as Strategy>::HostboundView;
 pub type GuestboundViewOf<'a, M> = <StrategyOf<M> as Strategy>::GuestboundView<'a>;
 
-pub trait HostContext: Sized {
-    fn guest_memory(&self) -> &[u8];
+#[derive(TransparentWrapper)]
+#[repr(transparent)]
+pub struct GuestMemory([u8]);
 
-    fn guest_memory_mut(&mut self) -> &mut [u8];
+impl fmt::Debug for GuestMemory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("GuestMemory").finish_non_exhaustive()
+    }
+}
 
-    fn alloc(&mut self, align: u32, size: u32) -> anyhow::Result<FfiPtr<()>>;
+impl GuestMemory {
+    pub fn wrap_ref(mem: &[u8]) -> &Self {
+        TransparentWrapper::wrap_ref(mem)
+    }
 
-    fn invoke(&mut self, id: u64, boxed_arg: u32) -> anyhow::Result<()>;
+    pub fn wrap_mut(mem: &mut [u8]) -> &mut Self {
+        TransparentWrapper::wrap_mut(mem)
+    }
+}
+
+impl GuestMemoryContext for GuestMemory {
+    fn memory(&self) -> &[u8] {
+        &self.0
+    }
+
+    fn memory_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
+pub trait GuestMemoryContext {
+    fn memory(&self) -> &[u8];
+
+    fn memory_mut(&mut self) -> &mut [u8];
 
     fn read_slice<T: Pod>(&self, base: u32, len: u32) -> anyhow::Result<&[T]> {
         if mem::size_of::<T>() == 0 {
@@ -29,7 +55,7 @@ pub trait HostContext: Sized {
         }
 
         let bytes = self
-            .guest_memory()
+            .memory()
             .get(base as usize..)
             .context("memory base address too large")?
             .get(
@@ -54,7 +80,7 @@ pub trait HostContext: Sized {
         }
 
         let bytes = self
-            .guest_memory_mut()
+            .memory_mut()
             .get_mut(base as usize..)
             .context("memory base address too large")?
             .get_mut(
@@ -82,6 +108,12 @@ pub trait HostContext: Sized {
     }
 }
 
+pub trait GuestInvokeContext: Sized + GuestMemoryContext {
+    fn alloc(&mut self, align: u32, size: u32) -> anyhow::Result<FfiPtr<()>>;
+
+    fn invoke(&mut self, id: u64, boxed_arg: u32) -> anyhow::Result<()>;
+}
+
 pub trait Marshal: Sized + 'static {
     type Strategy: Strategy;
 }
@@ -102,12 +134,12 @@ pub trait Strategy: Sized + 'static + Marshal<Strategy = Self> {
     type GuestboundView<'a>;
 
     fn decode_hostbound(
-        cx: &impl HostContext,
+        cx: &(impl ?Sized + GuestMemoryContext),
         ptr: FfiPtr<Self::Hostbound<'static>>,
     ) -> anyhow::Result<Self::HostboundView>;
 
     fn encode_guestbound(
-        cx: &mut impl HostContext,
+        cx: &mut impl GuestInvokeContext,
         out_ptr: FfiPtr<Self::Guestbound>,
         value: &Self::GuestboundView<'_>,
     ) -> anyhow::Result<()>;
@@ -258,12 +290,12 @@ impl<T> FfiPtr<T> {
 }
 
 impl<T: Pod> FfiPtr<T> {
-    pub fn read(self, cx: &impl HostContext) -> anyhow::Result<&T> {
+    pub fn read(self, cx: &(impl ?Sized + GuestMemoryContext)) -> anyhow::Result<&T> {
         let [value] = cx.read_array(self.addr())?;
         Ok(value)
     }
 
-    pub fn write(self, cx: &mut impl HostContext) -> anyhow::Result<&mut T> {
+    pub fn write(self, cx: &mut (impl ?Sized + GuestMemoryContext)) -> anyhow::Result<&mut T> {
         let [value] = cx.write_array(self.addr())?;
         Ok(value)
     }
@@ -346,11 +378,11 @@ impl<T> FfiSliceIndexable for FfiSlice<T> {
 }
 
 impl<T: Pod> FfiSlice<T> {
-    pub fn read(self, cx: &impl HostContext) -> anyhow::Result<&[T]> {
+    pub fn read(self, cx: &(impl ?Sized + GuestMemoryContext)) -> anyhow::Result<&[T]> {
         cx.read_slice(self.base().addr(), self.len())
     }
 
-    pub fn write(self, cx: &mut impl HostContext) -> anyhow::Result<&mut [T]> {
+    pub fn write(self, cx: &mut (impl ?Sized + GuestMemoryContext)) -> anyhow::Result<&mut [T]> {
         cx.write_slice(self.base().addr(), self.len())
     }
 }

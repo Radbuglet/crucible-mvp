@@ -133,12 +133,10 @@ impl GfxBindingsHandle {
         })?;
 
         linker.define_wsl(abi::GPU_UPLOAD_TEXTURE, move |cx, args, ret| {
-            // TODO: Allow split-borrows of guest memory and world.
-            let buffer = bytemuck::cast_slice(args.buffer.slice().read(cx)?).to_vec();
-
-            let w = cx.w();
+            let (w, mem) = cx.world_and_memory();
 
             let texture = self.r(w).handles.get(args.handle.raw)?.wgpu.clone();
+            let buffer = bytemuck::cast_slice(args.buffer.slice().read(mem)?).to_vec();
 
             self.r(w).window_mgr.renderer_mut(w).upload_texture(
                 &texture,

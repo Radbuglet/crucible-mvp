@@ -3,7 +3,10 @@ use std::{fmt, marker::PhantomData};
 use bytemuck::TransparentWrapper;
 use derive_where::derive_where;
 
-use crate::{Marshal, Strategy, utils::impl_tuples};
+use crate::{
+    FfiPtr, GuestInvokeContext, GuestMemoryContext, Marshal, Strategy, ffi_offset,
+    utils::impl_tuples,
+};
 
 // === Tuple Marshalling === //
 
@@ -130,13 +133,13 @@ const _: () = {
                 type GuestboundView<'a> = ($($para::GuestboundView<'a>,)*);
 
                 fn decode_hostbound(
-                    cx: &impl $crate::marshal_struct_internals::HostContext,
-                    ptr: $crate::marshal_struct_internals::FfiPtr<Self::Hostbound<'static>>,
-                ) -> $crate::marshal_struct_internals::Result<Self::HostboundView> {
+                    cx: &(impl ?Sized + GuestMemoryContext),
+                    ptr: FfiPtr<Self::Hostbound<'static>>,
+                ) -> anyhow::Result<Self::HostboundView> {
                     Ok(($(
-                        <<$para as $crate::marshal_struct_internals::Marshal>::Strategy>::decode_hostbound(
+                        <<$para as Marshal>::Strategy>::decode_hostbound(
                             cx,
-                            ptr.cast().field($crate::marshal_struct_internals::ffi_offset!(
+                            ptr.cast().field(ffi_offset!(
                                 <Self as Helper>::HostboundInner<'_>, $field,
                             )),
                         )?,
@@ -144,14 +147,14 @@ const _: () = {
                 }
 
                 fn encode_guestbound(
-                    cx: &mut impl $crate::marshal_struct_internals::HostContext,
-                    out_ptr: $crate::marshal_struct_internals::FfiPtr<Self::Guestbound>,
+                    cx: &mut impl GuestInvokeContext,
+                    out_ptr: FfiPtr<Self::Guestbound>,
                     value: &Self::GuestboundView<'_>,
-                ) -> $crate::marshal_struct_internals::Result<()> {
+                ) -> anyhow::Result<()> {
                     $(
-                        <<$para as $crate::marshal_struct_internals::Marshal>::Strategy>::encode_guestbound(
+                        <<$para as Marshal>::Strategy>::encode_guestbound(
                             cx,
-                            out_ptr.cast().field($crate::marshal_struct_internals::ffi_offset!(
+                            out_ptr.cast().field(ffi_offset!(
                                 <Self as Helper>::GuestboundInner, $field,
                             )),
                             &value.$field,
@@ -219,8 +222,9 @@ impl<'a> VariantSelector for GuestboundViewVariant<'a> {
 pub mod marshal_struct_internals {
     pub use {
         crate::{
-            FfiPtr, GuestboundVariant, GuestboundViewVariant, HostContext, HostboundVariant,
-            HostboundViewVariant, MarkerVariant, Marshal, Strategy, VariantSelector, ffi_offset,
+            FfiPtr, GuestInvokeContext, GuestMemoryContext, GuestboundVariant,
+            GuestboundViewVariant, HostboundVariant, HostboundViewVariant, MarkerVariant, Marshal,
+            Strategy, VariantSelector, ffi_offset,
         },
         anyhow::Result,
     };
@@ -260,7 +264,7 @@ macro_rules! marshal_struct {
             type GuestboundView<'a> = $item_name<$crate::marshal_struct_internals::GuestboundViewVariant<'a>>;
 
             fn decode_hostbound(
-                cx: &impl $crate::marshal_struct_internals::HostContext,
+                cx: &(impl ?Sized + $crate::marshal_struct_internals::GuestMemoryContext),
                 ptr: $crate::marshal_struct_internals::FfiPtr<Self::Hostbound<'static>>,
             ) -> $crate::marshal_struct_internals::Result<Self::HostboundView> {
                 Ok(Self::HostboundView {$(
@@ -274,7 +278,7 @@ macro_rules! marshal_struct {
             }
 
             fn encode_guestbound(
-                cx: &mut impl $crate::marshal_struct_internals::HostContext,
+                cx: &mut impl $crate::marshal_struct_internals::GuestInvokeContext,
                 out_ptr: $crate::marshal_struct_internals::FfiPtr<Self::Guestbound>,
                 value: &Self::GuestboundView<'_>,
             ) -> $crate::marshal_struct_internals::Result<()> {
@@ -299,7 +303,7 @@ macro_rules! marshal_struct {
 // Macro
 pub mod marshal_enum_internals {
     pub use {
-        crate::{FfiPtr, HostContext, Marshal, Strategy},
+        crate::{FfiPtr, GuestInvokeContext, GuestMemoryContext, Marshal, Strategy},
         anyhow::{Result, bail},
         std::{
             clone::Clone,
@@ -356,7 +360,7 @@ macro_rules! marshal_enum {
 
             #[allow(non_upper_case_globals)]
             fn decode_hostbound(
-                cx: &impl $crate::marshal_enum_internals::HostContext,
+                cx: &(impl ?Sized + $crate::marshal_enum_internals::GuestMemoryContext),
                 ptr: $crate::marshal_enum_internals::FfiPtr<Self>,
             ) -> $crate::marshal_enum_internals::Result<Self> {
                 $(
@@ -370,7 +374,7 @@ macro_rules! marshal_enum {
             }
 
             fn encode_guestbound(
-                cx: &mut impl $crate::marshal_enum_internals::HostContext,
+                cx: &mut impl $crate::marshal_enum_internals::GuestInvokeContext,
                 out_ptr: $crate::marshal_enum_internals::FfiPtr<Self>,
                 value: &Self,
             ) -> $crate::marshal_enum_internals::Result<()> {
@@ -389,9 +393,9 @@ macro_rules! marshal_enum {
 pub mod marshal_tagged_union_internals {
     pub use {
         crate::{
-            FfiPtr, GuestboundOf, GuestboundVariant, GuestboundViewVariant, HostContext,
-            HostboundOf, HostboundVariant, HostboundViewVariant, MarkerVariant, Marshal, Strategy,
-            VariantSelector, ffi_offset,
+            FfiPtr, GuestInvokeContext, GuestMemoryContext, GuestboundOf, GuestboundVariant,
+            GuestboundViewVariant, HostboundOf, HostboundVariant, HostboundViewVariant,
+            MarkerVariant, Marshal, Strategy, VariantSelector, ffi_offset,
         },
         anyhow::{Result, bail},
     };
@@ -445,7 +449,7 @@ macro_rules! marshal_tagged_union {
             type GuestboundView<'a> = $item_name<$crate::marshal_tagged_union_internals::GuestboundViewVariant<'a>>;
 
             fn decode_hostbound(
-                cx: &impl $crate::marshal_tagged_union_internals::HostContext,
+                cx: &(impl ?Sized + $crate::marshal_tagged_union_internals::GuestMemoryContext),
                 ptr: $crate::marshal_tagged_union_internals::FfiPtr<Self::Hostbound<'static>>,
             ) -> $crate::marshal_tagged_union_internals::Result<Self::HostboundView> {
                 let variant = *ptr.cast::<$crate::marshal_tagged_union_internals::primitives::$repr>().read(cx)?;
@@ -477,7 +481,7 @@ macro_rules! marshal_tagged_union {
             }
 
             fn encode_guestbound(
-                cx: &mut impl $crate::marshal_tagged_union_internals::HostContext,
+                cx: &mut impl $crate::marshal_tagged_union_internals::GuestInvokeContext,
                 out_ptr: $crate::marshal_tagged_union_internals::FfiPtr<Self::Guestbound>,
                 value: &Self::GuestboundView<'_>,
             ) -> $crate::marshal_tagged_union_internals::Result<()> {
