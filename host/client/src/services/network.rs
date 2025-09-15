@@ -110,11 +110,7 @@ impl LoginSocket {
 pub struct GameSocket {}
 
 impl GameSocket {
-    pub fn send_msg(&self, data: Vec<u8>) {
-        todo!()
-    }
-
-    pub fn recv_msg(&self) {
+    pub fn try_send_msg(&self, data: &[u8]) {
         todo!()
     }
 }
@@ -437,6 +433,8 @@ async fn process_play(args: PlayArgs) {
                     return Ok(Err(expected));
                 }
             }
+
+            hash_already_verified.store(true, Relaxed);
         } else {
             send_packet(&mut stream_tx, game::SbHello1::PlayUnchecked { id }).await?;
         }

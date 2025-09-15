@@ -142,8 +142,9 @@ impl WindowManagerHandle {
 pub struct WindowState {
     manager: WindowManagerHandle,
     window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
+    // N.B. `SurfaceTexture` must be dropped before the owning `Surface` or the adapter will UAF.
     surface_texture: Option<wgpu::SurfaceTexture>,
+    surface: wgpu::Surface<'static>,
 }
 
 component!(pub WindowState);

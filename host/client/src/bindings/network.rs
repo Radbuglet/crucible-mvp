@@ -157,6 +157,12 @@ impl NetworkBindingsHandle {
             ret.finish(cx, &())
         })?;
 
+        linker.define_wsl(abi::GAME_SOCKET_CLOSE, move |cx, args, ret| {
+            self.m(cx.w()).game_sockets.remove(args.raw)?;
+
+            ret.finish(cx, &())
+        })?;
+
         Ok(())
     }
 }

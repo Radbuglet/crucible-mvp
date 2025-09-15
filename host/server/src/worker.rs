@@ -173,7 +173,24 @@ impl GlobalState {
                 tx.get_mut().flush().await?;
             }
             game::SbHello1::PlayChecked { game_hash, id } => {
-                tracing::info!("client wants to play game with hash {game_hash:?} and ID {id:?}");
+                let hash_correct = game_hash == self.content.index_hash;
+
+                tracing::info!(
+                    "client wants to play game with hash {game_hash:?} ({}) and ID {id:?}",
+                    if hash_correct { "correct" } else { "incorrect" }
+                );
+
+                if !hash_correct {
+                    send_packet(
+                        &mut tx,
+                        game::CbPlayRes::WrongHash {
+                            expected: self.content.index_hash,
+                        },
+                    )
+                    .await?;
+
+                    return Ok(());
+                }
 
                 send_packet(&mut tx, game::CbPlayRes::Ready).await?;
             }

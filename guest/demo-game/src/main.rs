@@ -35,7 +35,7 @@ async fn main_loop() {
 
     tracing::info!("{:#?}", info);
 
-    let socket = socket.play(info.content_hash).await.unwrap().unwrap();
+    _ = socket.play(info.content_hash).await.unwrap().unwrap();
 
     let my_texture = CpuTexture::from_rgba8(
         image::load_from_memory(include_bytes!("demo1.png"))
