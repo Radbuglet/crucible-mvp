@@ -32,8 +32,8 @@ pub fn run_app() -> anyhow::Result<()> {
     let event_loop = EventLoop::<MainThreadTask>::with_user_event().build()?;
     let event_proxy = event_loop.create_proxy();
 
-    let root = EntityHandle::new(&mut world);
-    root.with_label("root", &mut world);
+    let root = EntityHandle::new(None, &mut world);
+    root.set_label("root", &mut world);
 
     // Setup WASM runtime
     tracing::info!("Setting up WASM runtime.");
@@ -79,9 +79,9 @@ pub struct App {
 #[derive(Debug)]
 pub struct AppInitState {
     pub window_mgr: WindowManagerHandle,
-    pub env_bindings: EnvBindingsHandle,
-    pub gfx_bindings: GfxBindingsHandle,
-    pub _net_bindings: NetworkBindingsHandle,
+    pub env_bindings: Strong<EnvBindingsHandle>,
+    pub gfx_bindings: Strong<GfxBindingsHandle>,
+    pub _net_bindings: Strong<NetworkBindingsHandle>,
     pub main_window: WindowStateHandle,
     pub store: WslStore,
     pub _instance: wasmtime::Instance,
@@ -106,26 +106,22 @@ impl FallibleApplicationHandler<MainThreadTask> for App {
             );
 
             let (gfx, surface) = create_gfx_context(window.clone()).await?;
-            let window_mgr = WindowManagerHandle::new(gfx, w);
-            self.root.add(window_mgr.clone(), w);
+            let window_mgr = WindowManagerHandle::new(self.root.as_weak(), gfx, w);
 
             let main_window = window_mgr.create_window(window.clone(), surface, w);
 
             // Setup WASM linker
             let mut linker = WslLinker::new(&self.engine);
 
-            let env_bindings = self.root.add(EnvBindingsHandle::new(w), w);
+            let env_bindings = EnvBindingsHandle::new(self.root.as_weak(), w);
             env_bindings.install(&mut linker)?;
 
-            let gfx_bindings = self
-                .root
-                .add(GfxBindingsHandle::new(window_mgr.as_weak(), w), w);
+            let gfx_bindings = GfxBindingsHandle::new(self.root.as_weak(), window_mgr.as_weak(), w);
 
             gfx_bindings.install(&mut linker)?;
 
-            let net_bindings = self
-                .root
-                .add(NetworkBindingsHandle::new(self.event_proxy.clone(), w)?, w);
+            let net_bindings =
+                NetworkBindingsHandle::new(self.root.as_weak(), self.event_proxy.clone(), w)?;
 
             net_bindings.install(&mut linker)?;
 

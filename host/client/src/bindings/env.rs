@@ -6,8 +6,8 @@ use std::{
 };
 
 use anyhow::Context;
-use arid::{Handle, Object, Strong, W, Wr};
-use arid_entity::component;
+use arid::{Handle, Strong, W, Wr};
+use arid_entity::{Component as _, EntityHandle, component};
 use crucible_abi::{self as abi, RunMode};
 use wasmlink_wasmtime::{WslContext, WslLinker, WslLinkerExt};
 
@@ -55,13 +55,13 @@ impl PartialOrd for IdentifiedTimeout {
 component!(pub EnvBindings);
 
 impl EnvBindingsHandle {
-    pub fn new(w: W) -> Strong<Self> {
+    pub fn new(owner: EntityHandle, w: W) -> Strong<Self> {
         EnvBindings {
             epoch: Instant::now(),
             timeout_handles: GuestArena::default(),
             timeout_queue: BTreeMap::default(),
         }
-        .spawn(w)
+        .attach(owner, w)
     }
 
     pub fn install(self, linker: &mut WslLinker) -> anyhow::Result<()> {

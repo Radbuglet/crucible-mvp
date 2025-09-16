@@ -27,11 +27,11 @@ wasmlink-wasmtime = { path = "utils/wasmlink-wasmtime" }
 
 [workspace.dependencies.arid]
 git = "https://github.com/Radbuglet/arid.git"
-rev = "8f35a74e1ac22445848a40747583ab2b29aeec5a"
+rev = "3e9c712b4f9b5a8fb1920576e8374e996826e65d"
 
 [workspace.dependencies.arid-entity]
 git = "https://github.com/Radbuglet/arid.git"
-rev = "8f35a74e1ac22445848a40747583ab2b29aeec5a"
+rev = "3e9c712b4f9b5a8fb1920576e8374e996826e65d"
 
 [workspace.dependencies.quinn]
 version = "0.11.8"

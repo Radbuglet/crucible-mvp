@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use arid::{Destructor, Handle, Strong, W, Wr};
-use arid_entity::{ComponentHandle, EntityHandle, component, component_internals::Object};
+use arid_entity::{Component, ComponentHandle, EntityHandle, component};
 use crucible_renderer::{Renderer, TEXTURE_FORMAT};
 use rustc_hash::FxHashMap;
 use winit::window::{Window, WindowId};
@@ -76,13 +76,13 @@ pub async fn create_gfx_context(
 pub struct WindowManager {
     gfx: GfxContext,
     renderer: Renderer,
-    windows: FxHashMap<WindowId, WindowStateHandle>,
+    windows: FxHashMap<WindowId, Strong<WindowStateHandle>>,
 }
 
 component!(pub WindowManager);
 
 impl WindowManagerHandle {
-    pub fn new(gfx: GfxContext, w: W) -> Strong<Self> {
+    pub fn new(owner: EntityHandle, gfx: GfxContext, w: W) -> Strong<Self> {
         let renderer = Renderer::new(gfx.device.clone());
 
         WindowManager {
@@ -90,7 +90,7 @@ impl WindowManagerHandle {
             renderer,
             windows: FxHashMap::default(),
         }
-        .spawn(w)
+        .attach(owner, w)
     }
 
     pub fn gfx(self, w: Wr<'_>) -> &GfxContext {
@@ -112,27 +112,22 @@ impl WindowManagerHandle {
         w: W,
     ) -> WindowStateHandle {
         let window_id = window.id();
-        let window_state = WindowState {
+        let (window_state, window_state_ref) = WindowState {
             manager: self,
             window,
             surface,
             surface_texture: None,
         }
-        .spawn(w);
+        .singleton(Some(self.entity(w)), w)
+        .split();
 
-        let window_entity = EntityHandle::new(w)
-            .with_label("window", w)
-            .with(window_state.clone(), w);
+        self.m(w).windows.insert(window_id, window_state);
 
-        self.entity(w).with_child(window_entity, w);
-
-        self.m(w).windows.insert(window_id, window_state.as_weak());
-
-        window_state.as_weak()
+        window_state_ref
     }
 
     pub fn lookup(self, id: WindowId, w: Wr) -> WindowStateHandle {
-        self.r(w).windows[&id]
+        self.r(w).windows[&id].as_weak()
     }
 }
 

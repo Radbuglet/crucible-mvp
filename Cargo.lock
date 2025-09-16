@@ -144,7 +144,7 @@ dependencies = [
 [[package]]
 name = "arid"
 version = "0.1.0"
-source = "git+https://github.com/Radbuglet/arid.git?rev=8f35a74e1ac22445848a40747583ab2b29aeec5a#8f35a74e1ac22445848a40747583ab2b29aeec5a"
+source = "git+https://github.com/Radbuglet/arid.git?rev=3e9c712b4f9b5a8fb1920576e8374e996826e65d#3e9c712b4f9b5a8fb1920576e8374e996826e65d"
 dependencies = [
  "bytemuck",
  "derive-where",
@@ -157,7 +157,7 @@ dependencies = [
 [[package]]
 name = "arid-entity"
 version = "0.1.0"
-source = "git+https://github.com/Radbuglet/arid.git?rev=8f35a74e1ac22445848a40747583ab2b29aeec5a#8f35a74e1ac22445848a40747583ab2b29aeec5a"
+source = "git+https://github.com/Radbuglet/arid.git?rev=3e9c712b4f9b5a8fb1920576e8374e996826e65d#3e9c712b4f9b5a8fb1920576e8374e996826e65d"
 dependencies = [
  "arid",
  "derive-where",

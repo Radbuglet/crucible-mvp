@@ -1,5 +1,5 @@
-use arid::{Handle, Object as _, Strong, W};
-use arid_entity::component;
+use arid::{Handle, Strong, W};
+use arid_entity::{Component, EntityHandle, component};
 use crucible_abi as abi;
 use crucible_protocol::game;
 use wasmlink_wasmtime::{WslLinker, WslLinkerExt, WslStoreExt};
@@ -21,7 +21,7 @@ pub struct NetworkBindings {
 component!(pub NetworkBindings);
 
 impl NetworkBindingsHandle {
-    pub fn new(proxy: AppEventProxy, w: W) -> anyhow::Result<Strong<Self>> {
+    pub fn new(owner: EntityHandle, proxy: AppEventProxy, w: W) -> anyhow::Result<Strong<Self>> {
         let endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())?;
 
         Ok(NetworkBindings {
@@ -30,7 +30,7 @@ impl NetworkBindingsHandle {
             login_sockets: GuestArena::default(),
             game_sockets: GuestArena::default(),
         }
-        .spawn(w))
+        .attach(owner, w))
     }
 
     pub fn install(self, linker: &mut WslLinker) -> anyhow::Result<()> {

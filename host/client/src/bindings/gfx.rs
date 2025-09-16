@@ -1,7 +1,7 @@
 use std::mem;
 
-use arid::{Handle, MayDangle, Object, Strong, W, Wr};
-use arid_entity::component;
+use arid::{Handle, MayDangle, Strong, W, Wr};
+use arid_entity::{Component, EntityHandle, component};
 use crucible_abi as abi;
 use glam::Affine2;
 use wasmlink::HostClosure;
@@ -38,14 +38,14 @@ pub struct WindowCallbacks {
 component!(pub GfxBindings);
 
 impl GfxBindingsHandle {
-    pub fn new(window_mgr: WindowManagerHandle, w: W) -> Strong<Self> {
+    pub fn new(owner: EntityHandle, window_mgr: WindowManagerHandle, w: W) -> Strong<Self> {
         GfxBindings {
             window_mgr,
             handles: GuestArena::default(),
             user_callbacks: None,
             redraw_requested: false,
         }
-        .spawn(w)
+        .attach(owner, w)
     }
 
     pub fn user_callbacks(self, w: Wr) -> Option<WindowCallbacks> {
