@@ -1,19 +1,20 @@
 use arid::{Handle, Strong, W};
 use arid_entity::{Component, EntityHandle, component};
 use crucible_abi as abi;
-use crucible_protocol::game;
 use wasmlink_wasmtime::{WslLinker, WslLinkerExt, WslStoreExt};
 
 use crate::{
-    app::{AppEventProxy, create_main_thread_promise},
+    app::App,
     services::network::{CertValidationMode, GameSocket, LoginSocket},
-    utils::arena::GuestArena,
+    utils::{
+        arena::GuestArena,
+        winit::{FallibleAppHandler as _, spawn_app_task},
+    },
 };
 
 #[derive(Debug)]
 pub struct NetworkBindings {
     endpoint: quinn::Endpoint,
-    proxy: AppEventProxy,
     login_sockets: GuestArena<LoginSocket>,
     game_sockets: GuestArena<GameSocket>,
 }
@@ -21,12 +22,11 @@ pub struct NetworkBindings {
 component!(pub NetworkBindings);
 
 impl NetworkBindingsHandle {
-    pub fn new(owner: EntityHandle, proxy: AppEventProxy, w: W) -> anyhow::Result<Strong<Self>> {
+    pub fn new(owner: EntityHandle, w: W) -> anyhow::Result<Strong<Self>> {
         let endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())?;
 
         Ok(NetworkBindings {
             endpoint,
-            proxy,
             login_sockets: GuestArena::default(),
             game_sockets: GuestArena::default(),
         }
@@ -39,33 +39,44 @@ impl NetworkBindingsHandle {
 
             let w = cx.w();
 
-            let handle = self.m(w).login_sockets.next_handle()?;
-
-            let callback = create_main_thread_promise(
-                self.r(w).proxy.clone(),
-                move |app, _events, res: anyhow::Result<()>| {
-                    let init = app.init.as_mut().unwrap();
-
-                    init.store.run_wsl_root(&mut app.world, |cx| match res {
-                        Ok(()) => args
-                            .callback
-                            .call(cx, &Ok(abi::LoginSocketHandle { raw: handle })),
-                        Err(err) => args.callback.call(cx, &Err(&err.to_string())),
-                    })?;
-
-                    Ok(())
-                },
-            );
-
             let socket = LoginSocket::new(
                 self.r(w).endpoint.clone(),
                 addr,
                 "localhost",
                 CertValidationMode::DontAuthenticate,
-                callback,
             );
 
-            self.m(w).login_sockets.add(socket).unwrap();
+            spawn_app_task(async move {
+                let socket = socket.await;
+
+                App::acquire_in_task::<anyhow::Result<_>>(|app| {
+                    let w = &mut app.world;
+
+                    let init = app.init.as_mut().unwrap();
+
+                    let socket = match socket {
+                        Ok(v) => v,
+                        Err(err) => {
+                            init.store.run_wsl_root(&mut app.world, |cx| {
+                                args.callback.call(cx, &Err(&err.to_string()))
+                            })?;
+
+                            return Ok(());
+                        }
+                    };
+
+                    let handle = self.m(w).login_sockets.add(socket)?;
+
+                    init.store.run_wsl_root(&mut app.world, |cx| {
+                        args.callback
+                            .call(cx, &Ok(abi::LoginSocketHandle { raw: handle }))
+                    })?;
+
+                    Ok(())
+                })
+                // TODO: Allow background tasks to contribute errors.
+                .unwrap();
+            });
 
             ret.finish(cx, &())
         })?;
@@ -73,29 +84,31 @@ impl NetworkBindingsHandle {
         linker.define_wsl(abi::LOGIN_SOCKET_GET_INFO, move |cx, args, ret| {
             let w = cx.w();
 
-            self.r(w)
-                .login_sockets
-                .get(args.socket.raw)?
-                .info(create_main_thread_promise(
-                    self.r(w).proxy.clone(),
-                    move |app, _events, res: anyhow::Result<game::CbServerList1>| {
-                        let init = app.init.as_mut().unwrap();
+            let info = self.r(w).login_sockets.get(args.socket.raw)?.info();
 
-                        init.store.run_wsl_root(&mut app.world, |cx| match res {
-                            Ok(info) => args.callback.call(
-                                cx,
-                                &Ok(abi::LoginServerInfo {
-                                    motd: &info.motd,
-                                    content_hash: abi::ContentHash(*info.content_hash.as_bytes()),
-                                    content_server: info.content_server.as_deref(),
-                                }),
-                            ),
-                            Err(err) => args.callback.call(cx, &Err(&err.to_string())),
-                        })?;
+            spawn_app_task(async move {
+                let res = info.recv().await;
 
-                        Ok(())
-                    },
-                ));
+                App::acquire_in_task::<anyhow::Result<()>>(|app| {
+                    let init = app.init.as_mut().unwrap();
+
+                    init.store.run_wsl_root(&mut app.world, |cx| match res {
+                        Ok(info) => args.callback.call(
+                            cx,
+                            &Ok(abi::LoginServerInfo {
+                                motd: &info.motd,
+                                content_hash: abi::ContentHash(*info.content_hash.as_bytes()),
+                                content_server: info.content_server.as_deref(),
+                            }),
+                        ),
+                        Err(err) => args.callback.call(cx, &Err(&err.to_string())),
+                    })?;
+
+                    Ok(())
+                })
+                // TODO: Allow background tasks to contribute errors.
+                .unwrap();
+            });
 
             ret.finish(cx, &())
         })?;
@@ -117,42 +130,50 @@ impl NetworkBindingsHandle {
         linker.define_wsl(abi::LOGIN_SOCKET_PLAY, move |cx, args, ret| {
             let w = cx.w();
 
-            self.r(w).login_sockets.get(args.socket.raw)?.play(
-                blake3::Hash::from_bytes(args.content_hash.0),
-                create_main_thread_promise(
-                    self.r(w).proxy.clone(),
-                    move |app, _events, res: anyhow::Result<Result<GameSocket, blake3::Hash>>| {
-                        let init = app.init.as_mut().unwrap();
+            let play = self
+                .r(w)
+                .login_sockets
+                .get(args.socket.raw)?
+                .play(blake3::Hash::from_bytes(args.content_hash.0));
 
-                        init.store
-                            .run_wsl_root::<anyhow::Result<()>>(&mut app.world, |cx| match res {
-                                Ok(Ok(socket)) => {
-                                    let socket = self.m(cx.w()).game_sockets.add(socket)?;
+            spawn_app_task(async move {
+                let res = play.recv().await;
 
-                                    args.callback
-                                        .call(cx, &Ok(Ok(abi::GameSocketHandle { raw: socket })))?;
+                App::acquire_in_task::<anyhow::Result<()>>(|app| {
+                    let init = app.init.as_mut().unwrap();
 
-                                    Ok(())
-                                }
-                                Ok(Err(content_hash)) => {
-                                    args.callback.call(
-                                        cx,
-                                        &Ok(Err(abi::ContentHash(*content_hash.as_bytes()))),
-                                    )?;
+                    init.store.run_wsl_root::<anyhow::Result<()>>(
+                        &mut app.world,
+                        |cx| match res {
+                            Ok(Ok(socket)) => {
+                                let socket = self.m(cx.w()).game_sockets.add(socket)?;
 
-                                    Ok(())
-                                }
-                                Err(err) => {
-                                    args.callback.call(cx, &Err(&err.to_string()))?;
+                                args.callback
+                                    .call(cx, &Ok(Ok(abi::GameSocketHandle { raw: socket })))?;
 
-                                    Ok(())
-                                }
-                            })?;
+                                Ok(())
+                            }
+                            Ok(Err(content_hash)) => {
+                                args.callback.call(
+                                    cx,
+                                    &Ok(Err(abi::ContentHash(*content_hash.as_bytes()))),
+                                )?;
 
-                        Ok(())
-                    },
-                ),
-            );
+                                Ok(())
+                            }
+                            Err(err) => {
+                                args.callback.call(cx, &Err(&err.to_string()))?;
+
+                                Ok(())
+                            }
+                        },
+                    )?;
+
+                    Ok(())
+                })
+                // TODO: Allow background tasks to contribute errors.
+                .unwrap()
+            });
 
             ret.finish(cx, &())
         })?;

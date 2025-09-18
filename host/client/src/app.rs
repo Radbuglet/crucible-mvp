@@ -1,14 +1,13 @@
-use std::{env, fmt, fs, sync::Arc};
+use std::{env, fs, sync::Arc};
 
 use anyhow::Context;
 use arid::{Strong, World};
 use arid_entity::EntityHandle;
 use futures::executor::block_on;
-use smallbox::{SmallBox, smallbox};
 use wasmlink_wasmtime::{WslLinker, WslStore, WslStoreExt, WslStoreState};
 use winit::{
     event::{KeyEvent, MouseButton, StartCause, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard,
     window::{WindowAttributes, WindowId},
 };
@@ -16,21 +15,15 @@ use winit::{
 use crate::{
     bindings::{env::EnvBindingsHandle, gfx::GfxBindingsHandle, network::NetworkBindingsHandle},
     services::window::{WindowManagerHandle, WindowStateHandle, create_gfx_context},
-    utils::{
-        promise::{Promise, PromiseCancelled},
-        winit::{FallibleApplicationHandler, run_app_fallible},
-    },
+    utils::winit::{FallibleAppHandler, run_app_fallible},
 };
-
-pub type AppEventProxy = EventLoopProxy<MainThreadTask>;
 
 pub fn run_app() -> anyhow::Result<()> {
     // Creating windowing services
     tracing::info!("Setting up windowing and graphics contexts.");
 
     let mut world = World::new();
-    let event_loop = EventLoop::<MainThreadTask>::with_user_event().build()?;
-    let event_proxy = event_loop.create_proxy();
+    let event_loop = EventLoop::new()?;
 
     let root = EntityHandle::new(None, &mut world);
     root.set_label("root", &mut world);
@@ -54,7 +47,6 @@ pub fn run_app() -> anyhow::Result<()> {
     run_app_fallible(
         event_loop,
         &mut App {
-            event_proxy,
             world,
             root,
             engine,
@@ -68,7 +60,6 @@ pub fn run_app() -> anyhow::Result<()> {
 
 #[derive(Debug)]
 pub struct App {
-    pub event_proxy: AppEventProxy,
     pub world: World,
     pub root: Strong<EntityHandle>,
     pub engine: wasmtime::Engine,
@@ -87,7 +78,7 @@ pub struct AppInitState {
     pub _instance: wasmtime::Instance,
 }
 
-impl FallibleApplicationHandler<MainThreadTask> for App {
+impl FallibleAppHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
         let w = &mut self.world;
 
@@ -105,24 +96,23 @@ impl FallibleApplicationHandler<MainThreadTask> for App {
                 )?,
             );
 
+            let root = self.root.as_weak();
+
             let (gfx, surface) = create_gfx_context(window.clone()).await?;
-            let window_mgr = WindowManagerHandle::new(self.root.as_weak(), gfx, w);
+            let window_mgr = WindowManagerHandle::new(root, gfx, w);
 
             let main_window = window_mgr.create_window(window.clone(), surface, w);
 
             // Setup WASM linker
             let mut linker = WslLinker::new(&self.engine);
 
-            let env_bindings = EnvBindingsHandle::new(self.root.as_weak(), w);
+            let env_bindings = EnvBindingsHandle::new(root, w);
             env_bindings.install(&mut linker)?;
 
-            let gfx_bindings = GfxBindingsHandle::new(self.root.as_weak(), window_mgr.as_weak(), w);
-
+            let gfx_bindings = GfxBindingsHandle::new(root, window_mgr.as_weak(), w);
             gfx_bindings.install(&mut linker)?;
 
-            let net_bindings =
-                NetworkBindingsHandle::new(self.root.as_weak(), self.event_proxy.clone(), w)?;
-
+            let net_bindings = NetworkBindingsHandle::new(root, w)?;
             net_bindings.install(&mut linker)?;
 
             linker.define_unknown_imports_as_traps(&self.module)?;
@@ -178,14 +168,6 @@ impl FallibleApplicationHandler<MainThreadTask> for App {
         }
 
         Ok(())
-    }
-
-    fn user_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        task: MainThreadTask,
-    ) -> anyhow::Result<()> {
-        task.call(self, event_loop)
     }
 
     fn window_event(
@@ -368,59 +350,5 @@ impl FallibleApplicationHandler<MainThreadTask> for App {
         self.world.flush();
 
         Ok(())
-    }
-}
-
-pub fn create_main_thread_promise<T, E, F>(event_proxy: AppEventProxy, f: F) -> Promise<T, E>
-where
-    T: 'static + Send,
-    E: 'static + Send + From<PromiseCancelled>,
-    F: 'static + Send + FnOnce(&mut App, &ActiveEventLoop, Result<T, E>) -> anyhow::Result<()>,
-{
-    Promise::new(move |res| {
-        _ = event_proxy.send_event(MainThreadTask::new(move |app, event_loop| {
-            f(app, event_loop, res)
-        }));
-    })
-}
-
-pub struct MainThreadTask {
-    #[expect(clippy::type_complexity)]
-    task: SmallBox<dyn Send + FnMut(&mut App, &ActiveEventLoop) -> anyhow::Result<()>, [usize; 4]>,
-}
-
-impl fmt::Debug for MainThreadTask {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MainThreadTask").finish_non_exhaustive()
-    }
-}
-
-impl<F> From<F> for MainThreadTask
-where
-    F: 'static + Send + FnOnce(&mut App, &ActiveEventLoop) -> anyhow::Result<()>,
-{
-    fn from(f: F) -> Self {
-        Self::new(f)
-    }
-}
-
-impl MainThreadTask {
-    pub fn new<F>(f: F) -> Self
-    where
-        F: 'static + Send + FnOnce(&mut App, &ActiveEventLoop) -> anyhow::Result<()>,
-    {
-        let mut f = Some(f);
-
-        Self {
-            task: smallbox!(
-                move |app: &mut App, event_loop: &ActiveEventLoop| f.take().unwrap()(
-                    app, event_loop
-                )
-            ),
-        }
-    }
-
-    pub fn call(mut self, app: &mut App, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        (self.task)(app, event_loop)
     }
 }

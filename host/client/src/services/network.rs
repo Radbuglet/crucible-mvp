@@ -26,11 +26,15 @@ use tokio::{
 };
 use tracing::{Instrument, info_span};
 
-use crate::utils::promise::Promise;
+use crate::utils::{
+    promise::{Promise, PromiseReceiver, promise},
+    winit::spawn_app_task,
+};
 
 // === Type Definitions === //
 
 type NetworkPromise<T> = Promise<T, anyhow::Error>;
+type NetworkPromiseRx<T> = PromiseReceiver<T, anyhow::Error>;
 
 #[derive(Debug, Clone)]
 pub enum CertValidationMode {
@@ -43,22 +47,22 @@ pub enum CertValidationMode {
 
 #[derive(Debug)]
 pub struct LoginSocket {
-    tx: mpsc::UnboundedSender<WorkerReq>,
+    req_tx: mpsc::UnboundedSender<WorkerReq>,
     rtt: Arc<AtomicU64>,
 }
 
 impl LoginSocket {
-    pub fn new(
+    pub async fn new(
         endpoint: quinn::Endpoint,
         addr: impl 'static + Send + ToSocketAddrs,
         addr_name: impl Into<String>,
         validation_mode: CertValidationMode,
-        connect_promise: NetworkPromise<()>,
-    ) -> LoginSocket {
+    ) -> anyhow::Result<Self> {
         let addr_name = addr_name.into();
         let span = info_span!("net worker", name = addr_name.clone());
 
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (req_tx, req_rx) = mpsc::unbounded_channel();
+        let (connect_tx, connect_rx) = promise();
         let rtt = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
 
         let worker = WorkerArgs {
@@ -66,11 +70,11 @@ impl LoginSocket {
             addr_name,
             validation_mode,
             rtt: rtt.clone(),
-            rx,
-            connect_promise,
+            req_rx,
+            connect_promise: connect_tx,
         };
 
-        tokio::spawn(
+        spawn_app_task(
             async move {
                 if let Err(err) = run_worker(worker, addr).await {
                     tracing::error!("{err:?}");
@@ -79,7 +83,9 @@ impl LoginSocket {
             .instrument(span),
         );
 
-        Self { tx, rtt }
+        connect_rx.recv().await?;
+
+        Ok(Self { req_tx, rtt })
     }
 
     pub fn rtt(&self) -> Option<f64> {
@@ -88,19 +94,22 @@ impl LoginSocket {
         (!rtt.is_nan()).then_some(rtt)
     }
 
-    pub fn info(&self, callback: NetworkPromise<game::CbServerList1>) {
-        _ = self.tx.send(WorkerReq::GetInfo { callback });
+    pub fn info(&self) -> NetworkPromiseRx<game::CbServerList1> {
+        let (tx, rx) = promise();
+        _ = self.req_tx.send(WorkerReq::GetInfo { callback: tx });
+        rx
     }
 
     pub fn play(
         &self,
         game_hash: blake3::Hash,
-        callback: NetworkPromise<Result<GameSocket, blake3::Hash>>,
-    ) {
-        _ = self.tx.send(WorkerReq::Play {
+    ) -> NetworkPromiseRx<Result<GameSocket, blake3::Hash>> {
+        let (tx, rx) = promise();
+        _ = self.req_tx.send(WorkerReq::Play {
             game_hash,
-            callback,
+            callback: tx,
         });
+        rx
     }
 }
 
@@ -122,7 +131,7 @@ struct WorkerArgs {
     addr_name: String,
     validation_mode: CertValidationMode,
     rtt: Arc<AtomicU64>,
-    rx: mpsc::UnboundedReceiver<WorkerReq>,
+    req_rx: mpsc::UnboundedReceiver<WorkerReq>,
     connect_promise: NetworkPromise<()>,
 }
 
@@ -147,7 +156,7 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
         addr_name,
         validation_mode: cert_mode,
         rtt,
-        mut rx,
+        mut req_rx,
         connect_promise,
     } = args;
 
@@ -254,7 +263,7 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
         .await?;
 
     // Start ping task
-    tokio::spawn({
+    spawn_app_task({
         let conn = conn.clone();
 
         async move {
@@ -284,11 +293,11 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
     let mut play_socket_counter = 0;
     let hash_already_verified = Arc::new(AtomicBool::new(false));
 
-    while let Some(cmd) = rx.recv().await {
+    while let Some(cmd) = req_rx.recv().await {
         let conn = conn.clone();
         let hash_already_verified = hash_already_verified.clone();
 
-        tokio::spawn(
+        spawn_app_task(
             async move {
                 tracing::info!("processing {cmd:?}");
 
@@ -301,7 +310,7 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
                         game_hash,
                         callback,
                     } => {
-                        tokio::spawn(process_play(PlayArgs {
+                        spawn_app_task(process_play(PlayArgs {
                             id: play_socket_counter,
                             conn,
                             game_hash,

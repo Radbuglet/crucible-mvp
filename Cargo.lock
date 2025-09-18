@@ -144,7 +144,7 @@ dependencies = [
 [[package]]
 name = "arid"
 version = "0.1.0"
-source = "git+https://github.com/Radbuglet/arid.git?rev=3e9c712b4f9b5a8fb1920576e8374e996826e65d#3e9c712b4f9b5a8fb1920576e8374e996826e65d"
+source = "git+https://github.com/Radbuglet/arid.git?rev=46448a8f0938af55804daf527ebe511ab8527fdd#46448a8f0938af55804daf527ebe511ab8527fdd"
 dependencies = [
  "bytemuck",
  "derive-where",
@@ -157,9 +157,10 @@ dependencies = [
 [[package]]
 name = "arid-entity"
 version = "0.1.0"
-source = "git+https://github.com/Radbuglet/arid.git?rev=3e9c712b4f9b5a8fb1920576e8374e996826e65d#3e9c712b4f9b5a8fb1920576e8374e996826e65d"
+source = "git+https://github.com/Radbuglet/arid.git?rev=46448a8f0938af55804daf527ebe511ab8527fdd#46448a8f0938af55804daf527ebe511ab8527fdd"
 dependencies = [
  "arid",
+ "bytemuck",
  "derive-where",
  "hashbrown",
  "index_vec",
@@ -1031,6 +1032,7 @@ dependencies = [
  "raw-window-handle",
  "rustc-hash 2.1.1",
  "rustls-platform-verifier",
+ "scopeguard",
  "smallbox",
  "thiserror 2.0.16",
  "tokio",

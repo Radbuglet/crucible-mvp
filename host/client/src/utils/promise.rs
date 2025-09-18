@@ -1,7 +1,9 @@
 use std::{fmt, thread};
 
-use smallbox::{SmallBox, smallbox};
+use futures::channel::oneshot;
 use thiserror::Error;
+
+// TODO: Consider making promises single-threaded.
 
 // === Promise === //
 
@@ -11,13 +13,22 @@ pub struct PromiseCancelled {
     pub was_panic: bool,
 }
 
-pub struct Promise<T, E>
+pub fn promise<T, E>() -> (Promise<T, E>, PromiseReceiver<T, E>)
 where
     T: 'static + Send,
     E: 'static + Send + From<PromiseCancelled>,
 {
-    #[expect(clippy::type_complexity)]
-    callback: Option<SmallBox<dyn Send + FnMut(Result<T, E>), [u64; 2]>>,
+    let (tx, rx) = oneshot::channel();
+
+    (Promise { tx: Some(tx) }, PromiseReceiver { rx })
+}
+
+pub struct Promise<T, E = PromiseCancelled>
+where
+    T: 'static + Send,
+    E: 'static + Send + From<PromiseCancelled>,
+{
+    tx: Option<oneshot::Sender<Result<T, E>>>,
 }
 
 impl<T, E> fmt::Debug for Promise<T, E>
@@ -35,14 +46,6 @@ where
     T: 'static + Send,
     E: 'static + Send + From<PromiseCancelled>,
 {
-    pub fn new(callback: impl 'static + Send + FnOnce(Result<T, E>)) -> Self {
-        let mut callback = Some(callback);
-
-        Self {
-            callback: Some(smallbox!(move |value| callback.take().unwrap()(value))),
-        }
-    }
-
     pub fn accept(self, value: T) {
         self.finish(Ok(value));
     }
@@ -52,11 +55,11 @@ where
     }
 
     pub fn finish(mut self, res: Result<T, E>) {
-        self.callback.take().unwrap()(res);
+        _ = self.tx.take().unwrap().send(res);
     }
 
     pub fn forget(mut self) {
-        self.callback.take();
+        self.tx.take();
     }
 }
 
@@ -66,12 +69,44 @@ where
     E: 'static + Send + From<PromiseCancelled>,
 {
     fn drop(&mut self) {
-        let Some(mut callback) = self.callback.take() else {
+        let Some(tx) = self.tx.take() else {
             return;
         };
 
         let was_panic = thread::panicking();
 
-        callback(Err(PromiseCancelled { was_panic }.into()));
+        _ = tx.send(Err(PromiseCancelled { was_panic }.into()));
+    }
+}
+
+pub struct PromiseReceiver<T, E = PromiseCancelled>
+where
+    T: 'static + Send,
+    E: 'static + Send + From<PromiseCancelled>,
+{
+    rx: oneshot::Receiver<Result<T, E>>,
+}
+
+impl<T, E> fmt::Debug for PromiseReceiver<T, E>
+where
+    T: 'static + Send,
+    E: 'static + Send + From<PromiseCancelled>,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PromiseReceiver").finish_non_exhaustive()
+    }
+}
+
+impl<T, E> PromiseReceiver<T, E>
+where
+    T: 'static + Send,
+    E: 'static + Send + From<PromiseCancelled>,
+{
+    pub async fn recv(self) -> Result<T, E> {
+        match self.rx.await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(PromiseCancelled { was_panic: false }.into()),
+        }
     }
 }
