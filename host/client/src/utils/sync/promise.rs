@@ -3,8 +3,6 @@ use std::{fmt, thread};
 use futures::channel::oneshot;
 use thiserror::Error;
 
-// TODO: Consider making promises single-threaded.
-
 // === Promise === //
 
 #[derive(Debug, Clone, Error)]

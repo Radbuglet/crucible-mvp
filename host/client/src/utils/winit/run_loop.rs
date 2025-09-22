@@ -1,14 +1,14 @@
 use std::{
-    any::Any,
     cell::{Cell, RefCell},
     fmt,
     panic::{self, AssertUnwindSafe, Location},
     ptr::NonNull,
-    rc::{Rc, Weak},
+    rc::Rc,
     sync::Arc,
     task,
 };
 
+use derive_where::derive_where;
 use futures::{
     StreamExt,
     stream::FuturesUnordered,
@@ -21,12 +21,7 @@ use winit::{
     window::WindowId,
 };
 
-// === run_app_fallible === //
-
-pub fn run_app_fallible(
-    event_loop: EventLoop<()>,
-    handler: &mut impl FallibleAppHandler,
-) -> anyhow::Result<()> {
+pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> anyhow::Result<()> {
     struct WinitWaker {
         // TODO: Avoid redundant wake-ups.
         proxy: EventLoopProxy<()>,
@@ -42,12 +37,12 @@ pub fn run_app_fallible(
         }
     }
 
-    struct Wrapper<'a, H> {
+    struct Wrapper<'a, H: 'static> {
         handler: &'a mut H,
         _waker: Arc<WinitWaker>,
         erased_waker: task::Waker,
         futures: FuturesUnordered<LocalFutureObj<'static, ()>>,
-        incoming: Rc<RefCell<Vec<LocalFutureObj<'static, ()>>>>,
+        background: BackgroundTasks<H>,
         error: Option<anyhow::Error>,
     }
 
@@ -77,16 +72,18 @@ pub fn run_app_fallible(
 
     impl<H> ApplicationHandler for Wrapper<'_, H>
     where
-        H: FallibleAppHandler,
+        H: WinitHandler,
     {
         fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
             self.exec_scoped(event_loop, |this| {
-                this.handler.new_events(event_loop, cause)
+                this.handler.new_events(event_loop, &this.background, cause)
             });
         }
 
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-            self.exec_scoped(event_loop, |this| this.handler.resumed(event_loop));
+            self.exec_scoped(event_loop, |this| {
+                this.handler.resumed(event_loop, &this.background)
+            });
         }
 
         fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
@@ -100,7 +97,8 @@ pub fn run_app_fallible(
             event: WindowEvent,
         ) {
             self.exec_scoped(event_loop, |this| {
-                this.handler.window_event(event_loop, window_id, event)
+                this.handler
+                    .window_event(event_loop, &this.background, window_id, event)
             });
         }
 
@@ -111,18 +109,19 @@ pub fn run_app_fallible(
             event: DeviceEvent,
         ) {
             self.exec_scoped(event_loop, |this| {
-                this.handler.device_event(event_loop, device_id, event)
+                this.handler
+                    .device_event(event_loop, &this.background, device_id, event)
             });
         }
 
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
             self.exec_scoped(event_loop, |this| {
-                this.handler.about_to_wait(event_loop)?;
+                this.handler.about_to_wait(event_loop, &this.background)?;
 
                 let _enter =
                     futures::executor::enter().expect("cannot run task executors reentrantly");
 
-                provide_app_state_for_task(this.handler, || {
+                this.background.provide_state(event_loop, this.handler, || {
                     loop {
                         // Attempt to make progress.
                         _ = this
@@ -130,7 +129,7 @@ pub fn run_app_fallible(
                             .poll_next_unpin(&mut task::Context::from_waker(&this.erased_waker));
 
                         // If that progress resulted in more tasks being spawned, try to update them.
-                        let mut incoming = this.incoming.borrow_mut();
+                        let mut incoming = this.background.inner.incoming.borrow_mut();
                         if !incoming.is_empty() {
                             this.futures.extend(incoming.drain(..));
                             continue;
@@ -141,30 +140,40 @@ pub fn run_app_fallible(
                     }
                 });
 
+                if let Some(err) = this.background.inner.error.take() {
+                    return Err(err);
+                }
+
                 Ok(())
             });
         }
 
         fn suspended(&mut self, event_loop: &ActiveEventLoop) {
-            self.exec_scoped(event_loop, |this| this.handler.suspended(event_loop));
+            self.exec_scoped(event_loop, |this| {
+                this.handler.suspended(event_loop, &this.background)
+            });
         }
 
         fn exiting(&mut self, event_loop: &ActiveEventLoop) {
-            self.exec_scoped(event_loop, |this| this.handler.exiting(event_loop));
+            self.exec_scoped(event_loop, |this| {
+                this.handler.exiting(event_loop, &this.background)
+            });
         }
 
         fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
-            self.exec_scoped(event_loop, |this| this.handler.memory_warning(event_loop));
+            self.exec_scoped(event_loop, |this| {
+                this.handler.memory_warning(event_loop, &this.background)
+            });
         }
     }
 
-    let incoming = Rc::new(RefCell::new(Vec::new()));
-    let _incoming_guard = scopeguard::guard(
-        CURRENT_TASK_SPAWNER.replace(Some(AppTaskSpawner {
-            incoming: Rc::downgrade(&incoming),
-        })),
-        |old| CURRENT_TASK_SPAWNER.set(old),
-    );
+    let background = BackgroundTasks {
+        inner: Rc::new(BackgroundTasksInner {
+            state: Cell::new(TaskAppState::Unset),
+            error: Cell::new(None),
+            incoming: RefCell::new(Vec::new()),
+        }),
+    };
 
     let waker = Arc::new(WinitWaker {
         proxy: event_loop.create_proxy(),
@@ -176,7 +185,7 @@ pub fn run_app_fallible(
         _waker: waker,
         erased_waker,
         futures: FuturesUnordered::new(),
-        incoming,
+        background,
         error: None,
     };
 
@@ -189,22 +198,28 @@ pub fn run_app_fallible(
     Ok(())
 }
 
-pub trait FallibleAppHandler: Sized + 'static {
+pub trait WinitHandler: Sized + 'static {
     fn new_events(
         &mut self,
         event_loop: &ActiveEventLoop,
+        background: &BackgroundTasks<Self>,
         cause: StartCause,
     ) -> anyhow::Result<()> {
-        let _ = (event_loop, cause);
+        let _ = (event_loop, background, cause);
 
         Ok(())
     }
 
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()>;
+    fn resumed(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        background: &BackgroundTasks<Self>,
+    ) -> anyhow::Result<()>;
 
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
+        background: &BackgroundTasks<Self>,
         window_id: WindowId,
         event: WindowEvent,
     ) -> anyhow::Result<()>;
@@ -212,128 +227,161 @@ pub trait FallibleAppHandler: Sized + 'static {
     fn device_event(
         &mut self,
         event_loop: &ActiveEventLoop,
+        background: &BackgroundTasks<Self>,
         device_id: DeviceId,
         event: DeviceEvent,
     ) -> anyhow::Result<()> {
-        let _ = (event_loop, device_id, event);
+        let _ = (event_loop, background, device_id, event);
 
         Ok(())
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        let _ = event_loop;
+    fn about_to_wait(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        background: &BackgroundTasks<Self>,
+    ) -> anyhow::Result<()> {
+        let _ = (event_loop, background);
 
         Ok(())
     }
 
-    fn suspended(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        let _ = event_loop;
+    fn suspended(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        background: &BackgroundTasks<Self>,
+    ) -> anyhow::Result<()> {
+        let _ = (event_loop, background);
 
         Ok(())
     }
 
-    fn exiting(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        let _ = event_loop;
+    fn exiting(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        background: &BackgroundTasks<Self>,
+    ) -> anyhow::Result<()> {
+        let _ = (event_loop, background);
 
         Ok(())
     }
 
-    fn memory_warning(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        let _ = event_loop;
+    fn memory_warning(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        background: &BackgroundTasks<Self>,
+    ) -> anyhow::Result<()> {
+        let _ = (event_loop, background);
 
         Ok(())
-    }
-
-    fn acquire_in_task<R>(f: impl FnOnce(&mut Self) -> R) -> R {
-        acquire_app_state_in_task(f)
     }
 }
 
-// === App State for Tasks === //
+#[derive_where(Clone)]
+pub struct BackgroundTasks<T: 'static> {
+    inner: Rc<BackgroundTasksInner<T>>,
+}
 
-enum TaskState {
-    Set(NonNull<dyn Any>),
+struct BackgroundTasksInner<T> {
+    state: Cell<TaskAppState<T>>,
+    error: Cell<Option<anyhow::Error>>,
+    incoming: RefCell<Vec<LocalFutureObj<'static, ()>>>,
+}
+
+enum TaskAppState<T> {
+    Set(NonNull<ActiveEventLoop>, NonNull<T>),
     Unset,
     Borrowed(&'static Location<'static>),
 }
 
-thread_local! {
-    static TASK_STATE: Cell<TaskState> = const { Cell::new(TaskState::Unset) };
-}
-
-pub fn provide_app_state_for_task<T: FallibleAppHandler, R>(
-    state: &mut T,
-    f: impl FnOnce() -> R,
-) -> R {
-    let _guard = scopeguard::guard(
-        TASK_STATE.replace(TaskState::Set(NonNull::from(state as &mut dyn Any))),
-        |old| {
-            TASK_STATE.set(old);
-        },
-    );
-
-    f()
-}
-
-#[track_caller]
-pub fn acquire_app_state_in_task<T: FallibleAppHandler, R>(f: impl FnOnce(&mut T) -> R) -> R {
-    let mut state = scopeguard::guard(
-        TASK_STATE.replace(TaskState::Borrowed(Location::caller())),
-        |old| {
-            TASK_STATE.set(old);
-        },
-    );
-
-    let state = match &mut *state {
-        TaskState::Set(state) => state,
-        TaskState::Unset => panic!("no app state bound"),
-        TaskState::Borrowed(location) => panic!("app state already acquired at {location}"),
-    };
-
-    let state = unsafe { state.as_mut() }
-        .downcast_mut::<T>()
-        .expect("mismatched app types");
-
-    f(state)
-}
-
-// === AppTaskSpawner === //
-
-thread_local! {
-    static CURRENT_TASK_SPAWNER: RefCell<Option<AppTaskSpawner>> = const { RefCell::new(None) };
-}
-
-#[derive(Clone)]
-pub struct AppTaskSpawner {
-    incoming: Weak<RefCell<Vec<LocalFutureObj<'static, ()>>>>,
-}
-
-impl AppTaskSpawner {
-    pub fn get() -> Self {
-        CURRENT_TASK_SPAWNER
-            .with_borrow(|v| v.clone())
-            .expect("no app running")
-    }
-}
-
-impl fmt::Debug for AppTaskSpawner {
+impl<T: 'static> fmt::Debug for BackgroundTasks<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AppTaskSpawner").finish_non_exhaustive()
+        f.debug_struct("BackgroundTasks").finish_non_exhaustive()
     }
 }
 
-impl LocalSpawn for AppTaskSpawner {
-    fn spawn_local_obj(&self, future: LocalFutureObj<'static, ()>) -> Result<(), SpawnError> {
-        self.incoming
-            .upgrade()
-            .ok_or_else(SpawnError::shutdown)?
-            .borrow_mut()
-            .push(future);
+impl<T: 'static> BackgroundTasks<T> {
+    fn provide_state<R>(
+        &self,
+        event_loop: &ActiveEventLoop,
+        state: &mut T,
+        f: impl FnOnce() -> R,
+    ) -> R {
+        let _guard_state = scopeguard::guard(
+            self.inner.state.replace(TaskAppState::Set(
+                NonNull::from(event_loop),
+                NonNull::from(state),
+            )),
+            |old| {
+                self.inner.state.set(old);
+            },
+        );
 
+        f()
+    }
+
+    #[track_caller]
+    pub fn acquire_state<R>(&self, f: impl FnOnce(&ActiveEventLoop, &mut T) -> R) -> R {
+        let mut state = scopeguard::guard(
+            self.inner
+                .state
+                .replace(TaskAppState::Borrowed(Location::caller())),
+            |old| {
+                self.inner.state.set(old);
+            },
+        );
+
+        let (event_loop, state) = match &mut *state {
+            TaskAppState::Set(a, b) => (a, b),
+            TaskAppState::Unset => panic!("no app state bound"),
+            TaskAppState::Borrowed(location) => panic!("app state already acquired at {location}"),
+        };
+
+        f(unsafe { event_loop.as_mut() }, unsafe { state.as_mut() })
+    }
+
+    pub fn raw_spawner(&self) -> BackgroundTasksRawSpawner<'_, T> {
+        BackgroundTasksRawSpawner(self)
+    }
+
+    pub fn spawn(&self, f: impl 'static + Future<Output = ()>) {
+        self.raw_spawner().spawn_local(f).unwrap();
+    }
+
+    pub fn spawn_fallible(&self, f: impl 'static + Future<Output = anyhow::Result<()>>) {
+        let me = self.clone();
+
+        self.spawn(async move {
+            if let Err(err) = f.await {
+                me.report_error(err);
+            }
+        });
+    }
+
+    pub fn spawn_responder<V: 'static>(
+        &self,
+        fut: impl 'static + Future<Output = V>,
+        resp: impl 'static + FnOnce(&ActiveEventLoop, &mut T, V) -> anyhow::Result<()>,
+    ) {
+        let me = self.clone();
+
+        self.spawn_fallible(async move {
+            let res = fut.await;
+            me.acquire_state(|event_loop, state| resp(event_loop, state, res))
+        });
+    }
+
+    fn report_error(&self, error: anyhow::Error) {
+        self.inner.error.set(Some(error));
+    }
+}
+
+#[derive_where(Debug, Clone)]
+pub struct BackgroundTasksRawSpawner<'a, T: 'static>(pub &'a BackgroundTasks<T>);
+
+impl<T: 'static> LocalSpawn for BackgroundTasksRawSpawner<'_, T> {
+    fn spawn_local_obj(&self, future: LocalFutureObj<'static, ()>) -> Result<(), SpawnError> {
+        self.0.inner.incoming.borrow_mut().push(future);
         Ok(())
     }
-}
-
-pub fn spawn_app_task(f: impl 'static + Future<Output = ()>) {
-    AppTaskSpawner::get().spawn_local(f).unwrap();
 }

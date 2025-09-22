@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let _guard = rt.enter();
 
-    app::run_app()?;
+    app::main_inner()?;
 
     Ok(())
 }

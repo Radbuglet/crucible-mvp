@@ -15,10 +15,10 @@ use winit::{
 use crate::{
     bindings::{env::EnvBindingsHandle, gfx::GfxBindingsHandle, network::NetworkBindingsHandle},
     services::window::{WindowManagerHandle, WindowStateHandle, create_gfx_context},
-    utils::winit::{FallibleAppHandler, run_app_fallible},
+    utils::winit::{BackgroundTasks, WinitHandler, run_winit},
 };
 
-pub fn run_app() -> anyhow::Result<()> {
+pub fn main_inner() -> anyhow::Result<()> {
     // Creating windowing services
     tracing::info!("Setting up windowing and graphics contexts.");
 
@@ -44,7 +44,7 @@ pub fn run_app() -> anyhow::Result<()> {
     // Start main loop
     tracing::info!("Starting main loop!");
 
-    run_app_fallible(
+    run_winit(
         event_loop,
         &mut App {
             world,
@@ -78,8 +78,12 @@ pub struct AppInitState {
     pub _instance: wasmtime::Instance,
 }
 
-impl FallibleAppHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
+impl WinitHandler for App {
+    fn resumed(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        background: &BackgroundTasks<Self>,
+    ) -> anyhow::Result<()> {
         let w = &mut self.world;
 
         if self.init.is_some() {
@@ -112,7 +116,7 @@ impl FallibleAppHandler for App {
             let gfx_bindings = GfxBindingsHandle::new(root, window_mgr.as_weak(), w);
             gfx_bindings.install(&mut linker)?;
 
-            let net_bindings = NetworkBindingsHandle::new(root, w)?;
+            let net_bindings = NetworkBindingsHandle::new(root, background.clone(), w)?;
             net_bindings.install(&mut linker)?;
 
             linker.define_unknown_imports_as_traps(&self.module)?;
@@ -156,6 +160,7 @@ impl FallibleAppHandler for App {
     fn new_events(
         &mut self,
         _event_loop: &ActiveEventLoop,
+        _background: &BackgroundTasks<Self>,
         cause: StartCause,
     ) -> anyhow::Result<()> {
         let Some(init) = &mut self.init else {
@@ -173,6 +178,7 @@ impl FallibleAppHandler for App {
     fn window_event(
         &mut self,
         _event_loop: &ActiveEventLoop,
+        _background: &BackgroundTasks<Self>,
         window_id: WindowId,
         event: WindowEvent,
     ) -> anyhow::Result<()> {
@@ -326,7 +332,11 @@ impl FallibleAppHandler for App {
         Ok(())
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
+    fn about_to_wait(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _background: &BackgroundTasks<Self>,
+    ) -> anyhow::Result<()> {
         let w = &mut self.world;
 
         let Some(init) = &mut self.init else {

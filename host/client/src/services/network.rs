@@ -26,9 +26,12 @@ use tokio::{
 };
 use tracing::{Instrument, info_span};
 
-use crate::utils::{
-    promise::{Promise, PromiseReceiver, promise},
-    winit::spawn_app_task,
+use crate::{
+    app::App,
+    utils::{
+        sync::{Promise, PromiseReceiver, promise},
+        winit::BackgroundTasks,
+    },
 };
 
 // === Type Definitions === //
@@ -53,6 +56,7 @@ pub struct LoginSocket {
 
 impl LoginSocket {
     pub async fn new(
+        background: BackgroundTasks<App>,
         endpoint: quinn::Endpoint,
         addr: impl 'static + Send + ToSocketAddrs,
         addr_name: impl Into<String>,
@@ -66,6 +70,7 @@ impl LoginSocket {
         let rtt = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
 
         let worker = WorkerArgs {
+            background: background.clone(),
             endpoint,
             addr_name,
             validation_mode,
@@ -74,7 +79,7 @@ impl LoginSocket {
             connect_promise: connect_tx,
         };
 
-        spawn_app_task(
+        background.spawn(
             async move {
                 if let Err(err) = run_worker(worker, addr).await {
                     tracing::error!("{err:?}");
@@ -127,6 +132,7 @@ impl GameSocket {
 // === Worker === //
 
 struct WorkerArgs {
+    background: BackgroundTasks<App>,
     endpoint: quinn::Endpoint,
     addr_name: String,
     validation_mode: CertValidationMode,
@@ -152,6 +158,7 @@ enum WorkerReq {
 
 async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Result<()> {
     let WorkerArgs {
+        background,
         endpoint,
         addr_name,
         validation_mode: cert_mode,
@@ -263,7 +270,7 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
         .await?;
 
     // Start ping task
-    spawn_app_task({
+    background.spawn({
         let conn = conn.clone();
 
         async move {
@@ -297,7 +304,9 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
         let conn = conn.clone();
         let hash_already_verified = hash_already_verified.clone();
 
-        spawn_app_task(
+        background.spawn({
+            let background = background.clone();
+
             async move {
                 tracing::info!("processing {cmd:?}");
 
@@ -310,7 +319,7 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
                         game_hash,
                         callback,
                     } => {
-                        spawn_app_task(process_play(PlayArgs {
+                        background.spawn(process_play(PlayArgs {
                             id: play_socket_counter,
                             conn,
                             game_hash,
@@ -320,8 +329,8 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
                     }
                 }
             }
-            .instrument(info_span!("task worker", task = task_counter)),
-        );
+            .instrument(info_span!("task worker", task = task_counter))
+        });
 
         task_counter += 1;
         play_socket_counter += 1;

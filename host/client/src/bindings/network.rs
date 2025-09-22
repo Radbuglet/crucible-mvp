@@ -6,10 +6,7 @@ use wasmlink_wasmtime::{WslLinker, WslLinkerExt, WslStoreExt};
 use crate::{
     app::App,
     services::network::{CertValidationMode, GameSocket, LoginSocket},
-    utils::{
-        arena::GuestArena,
-        winit::{FallibleAppHandler as _, spawn_app_task},
-    },
+    utils::{arena::GuestArena, winit::BackgroundTasks},
 };
 
 #[derive(Debug)]
@@ -17,18 +14,24 @@ pub struct NetworkBindings {
     endpoint: quinn::Endpoint,
     login_sockets: GuestArena<LoginSocket>,
     game_sockets: GuestArena<GameSocket>,
+    background: BackgroundTasks<App>,
 }
 
 component!(pub NetworkBindings);
 
 impl NetworkBindingsHandle {
-    pub fn new(owner: EntityHandle, w: W) -> anyhow::Result<Strong<Self>> {
+    pub fn new(
+        owner: EntityHandle,
+        background: BackgroundTasks<App>,
+        w: W,
+    ) -> anyhow::Result<Strong<Self>> {
         let endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())?;
 
         Ok(NetworkBindings {
             endpoint,
             login_sockets: GuestArena::default(),
             game_sockets: GuestArena::default(),
+            background,
         }
         .attach(owner, w))
     }
@@ -40,21 +43,21 @@ impl NetworkBindingsHandle {
             let w = cx.w();
 
             let socket = LoginSocket::new(
+                self.r(w).background.clone(),
                 self.r(w).endpoint.clone(),
                 addr,
                 "localhost",
                 CertValidationMode::DontAuthenticate,
             );
 
-            spawn_app_task(async move {
-                let socket = socket.await;
-
-                App::acquire_in_task::<anyhow::Result<_>>(|app| {
+            self.r(w)
+                .background
+                .spawn_responder(socket, move |_event_loop, app, res| {
                     let w = &mut app.world;
 
                     let init = app.init.as_mut().unwrap();
 
-                    let socket = match socket {
+                    let socket = match res {
                         Ok(v) => v,
                         Err(err) => {
                             init.store.run_wsl_root(&mut app.world, |cx| {
@@ -73,10 +76,7 @@ impl NetworkBindingsHandle {
                     })?;
 
                     Ok(())
-                })
-                // TODO: Allow background tasks to contribute errors.
-                .unwrap();
-            });
+                });
 
             ret.finish(cx, &())
         })?;
@@ -86,10 +86,9 @@ impl NetworkBindingsHandle {
 
             let info = self.r(w).login_sockets.get(args.socket.raw)?.info();
 
-            spawn_app_task(async move {
-                let res = info.recv().await;
-
-                App::acquire_in_task::<anyhow::Result<()>>(|app| {
+            self.r(w)
+                .background
+                .spawn_responder(info.recv(), move |_event_loop, app, res| {
                     let init = app.init.as_mut().unwrap();
 
                     init.store.run_wsl_root(&mut app.world, |cx| match res {
@@ -105,10 +104,7 @@ impl NetworkBindingsHandle {
                     })?;
 
                     Ok(())
-                })
-                // TODO: Allow background tasks to contribute errors.
-                .unwrap();
-            });
+                });
 
             ret.finish(cx, &())
         })?;
@@ -136,10 +132,9 @@ impl NetworkBindingsHandle {
                 .get(args.socket.raw)?
                 .play(blake3::Hash::from_bytes(args.content_hash.0));
 
-            spawn_app_task(async move {
-                let res = play.recv().await;
-
-                App::acquire_in_task::<anyhow::Result<()>>(|app| {
+            self.r(w)
+                .background
+                .spawn_responder(play.recv(), move |_event_loop, app, res| {
                     let init = app.init.as_mut().unwrap();
 
                     init.store.run_wsl_root::<anyhow::Result<()>>(
@@ -170,10 +165,7 @@ impl NetworkBindingsHandle {
                     )?;
 
                     Ok(())
-                })
-                // TODO: Allow background tasks to contribute errors.
-                .unwrap()
-            });
+                });
 
             ret.finish(cx, &())
         })?;
