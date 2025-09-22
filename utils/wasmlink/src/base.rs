@@ -234,7 +234,7 @@ impl<S: FfiSliceIndexable> FfiIndex<S> for Range<u32> {
 // === FFI Types === //
 
 #[derive(TransparentWrapper)]
-#[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
+#[derive_where(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 #[repr(transparent)]
 #[transparent(u32)]
 pub struct FfiPtr<T> {
@@ -301,7 +301,7 @@ impl<T: Pod> FfiPtr<T> {
     }
 }
 
-#[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
+#[derive_where(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 #[repr(C)]
 pub struct FfiSlice<T> {
     _ty: PhantomData<fn(T) -> T>,

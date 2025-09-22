@@ -1,6 +1,9 @@
 use crucible_abi as abi;
+use futures::channel::oneshot;
 use thiserror::Error;
-use wasmlink::{GuestSliceRef, bind_port};
+use wasmlink::{GuestSliceRef, OwnedGuestClosure, bind_port};
+
+use crate::base::task::wake_executor;
 
 #[derive(Debug, Clone, Error)]
 #[error("{msg}")]
@@ -34,19 +37,40 @@ impl GameSocket {
         game_socket_get_rtt(&self.handle).decode()
     }
 
-    pub fn send(&self, msg: &[u8]) -> Result<(), GameSocketError> {
+    pub async fn send(&mut self, msg: &[u8]) -> Result<(), GameSocketError> {
         bind_port! {
             fn [abi::GAME_SOCKET_SEND_MSG] "crucible".game_socket_send_msg(
                 abi::GameSocketSendMsgArgs
-            ) -> Result<(), String>;
+            );
+
+            fn [abi::GAME_SOCKET_CANCEL_SEND_MSG] "crucible".game_socket_cancel_send_msg(
+                abi::GameSocketHandle
+            );
         }
+
+        let (tx, rx) = oneshot::channel();
+
+        let callback = OwnedGuestClosure::<Result<(), String>>::new_once(move |res| {
+            tx.send(
+                res.decode()
+                    .map_err(|err| GameSocketError { msg: err.decode() }),
+            )
+            .unwrap();
+
+            wake_executor();
+        });
+
+        let guard = scopeguard::guard((), |()| game_socket_cancel_send_msg(&self.handle));
 
         game_socket_send_msg(&abi::GameSocketSendMsgArgs {
             socket: self.handle,
             message: GuestSliceRef::new(msg),
-        })
-        .decode()
-        .map_err(|v| GameSocketError { msg: v.decode() })
+            callback: callback.handle(),
+        });
+
+        let res = rx.await.unwrap();
+        scopeguard::ScopeGuard::into_inner(guard);
+        res
     }
 
     pub fn recv(&self) -> Result<Vec<u8>, GameSocketError> {

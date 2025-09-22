@@ -11,6 +11,7 @@ use std::{
 use derive_where::derive_where;
 use futures::{
     StreamExt,
+    future::RemoteHandle,
     stream::FuturesUnordered,
     task::{LocalFutureObj, LocalSpawn, LocalSpawnExt, SpawnError},
 };
@@ -344,31 +345,42 @@ impl<T: 'static> BackgroundTasks<T> {
         BackgroundTasksRawSpawner(self)
     }
 
-    pub fn spawn(&self, f: impl 'static + Future<Output = ()>) {
-        self.raw_spawner().spawn_local(f).unwrap();
+    pub fn spawn<O: 'static>(&self, f: impl 'static + Future<Output = O>) -> RemoteHandle<O> {
+        self.raw_spawner().spawn_local_with_handle(f).unwrap()
     }
 
-    pub fn spawn_fallible(&self, f: impl 'static + Future<Output = anyhow::Result<()>>) {
+    pub fn spawn_fallible<O: 'static>(
+        &self,
+        f: impl 'static + Future<Output = anyhow::Result<O>>,
+    ) -> RemoteHandle<Option<O>> {
         let me = self.clone();
 
         self.spawn(async move {
-            if let Err(err) = f.await {
-                me.report_error(err);
+            match f.await {
+                Ok(val) => Some(val),
+                Err(err) => {
+                    me.report_error(err);
+                    None
+                }
             }
-        });
+        })
     }
 
-    pub fn spawn_responder<V: 'static>(
+    pub fn spawn_responder<V, O>(
         &self,
         fut: impl 'static + Future<Output = V>,
-        resp: impl 'static + FnOnce(&ActiveEventLoop, &mut T, V) -> anyhow::Result<()>,
-    ) {
+        resp: impl 'static + FnOnce(&ActiveEventLoop, &mut T, V) -> anyhow::Result<O>,
+    ) -> RemoteHandle<Option<O>>
+    where
+        V: 'static,
+        O: 'static,
+    {
         let me = self.clone();
 
         self.spawn_fallible(async move {
             let res = fut.await;
             me.acquire_state(|event_loop, state| resp(event_loop, state, res))
-        });
+        })
     }
 
     fn report_error(&self, error: anyhow::Error) {

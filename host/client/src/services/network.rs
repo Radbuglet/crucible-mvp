@@ -25,6 +25,8 @@ use tokio::{
     sync::mpsc,
 };
 use tracing::{Instrument, info_span};
+use wasmlink::HostSlice;
+use wasmlink_wasmtime::WslStoreExt;
 
 use crate::{
     app::App,
@@ -79,14 +81,16 @@ impl LoginSocket {
             connect_promise: connect_tx,
         };
 
-        background.spawn(
-            async move {
-                if let Err(err) = run_worker(worker, addr).await {
-                    tracing::error!("{err:?}");
+        background
+            .spawn(
+                async move {
+                    if let Err(err) = run_worker(worker, addr).await {
+                        tracing::error!("{err:?}");
+                    }
                 }
-            }
-            .instrument(span),
-        );
+                .instrument(span),
+            )
+            .forget();
 
         connect_rx.await?;
 
@@ -121,11 +125,25 @@ impl LoginSocket {
 // === GameSocket === //
 
 #[derive(Debug)]
-pub struct GameSocket {}
+pub struct GameSocket {
+    id: u64,
+    req_tx: mpsc::UnboundedSender<PlayReq>,
+}
 
 impl GameSocket {
-    pub fn try_send_msg(&self, data: &[u8]) {
-        todo!()
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn send_msg(&self, data: HostSlice<u8>) -> NetworkPromiseFuture<()> {
+        let (promise, fut) = promise();
+
+        _ = self.req_tx.send(PlayReq::SendMsg {
+            data,
+            callback: promise,
+        });
+
+        fut
     }
 }
 
@@ -270,26 +288,28 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
         .await?;
 
     // Start ping task
-    background.spawn({
-        let conn = conn.clone();
+    background
+        .spawn({
+            let conn = conn.clone();
 
-        async move {
-            if let Err(err) = process_ping(conn, rtt).await {
-                match err.downcast_ref::<quinn::ConnectionError>() {
-                    Some(
-                        quinn::ConnectionError::ApplicationClosed(_)
-                        | quinn::ConnectionError::ConnectionClosed(_),
-                    ) => {
-                        // (fallthrough)
-                    }
-                    _ => {
-                        tracing::error!("ping task crashed: {err}");
+            async move {
+                if let Err(err) = process_ping(conn, rtt).await {
+                    match err.downcast_ref::<quinn::ConnectionError>() {
+                        Some(
+                            quinn::ConnectionError::ApplicationClosed(_)
+                            | quinn::ConnectionError::ConnectionClosed(_),
+                        ) => {
+                            // (fallthrough)
+                        }
+                        _ => {
+                            tracing::error!("ping task crashed: {err}");
+                        }
                     }
                 }
             }
-        }
-        .in_current_span()
-    });
+            .in_current_span()
+        })
+        .forget();
 
     // Start main loop
     tracing::info!("connected to remote host");
@@ -304,33 +324,39 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
         let conn = conn.clone();
         let hash_already_verified = hash_already_verified.clone();
 
-        background.spawn({
-            let background = background.clone();
+        background
+            .spawn({
+                let background = background.clone();
 
-            async move {
-                tracing::info!("processing {cmd:?}");
+                async move {
+                    tracing::info!("processing {cmd:?}");
 
-                match cmd {
-                    WorkerReq::GetInfo { callback } => {
-                        callback.finish(process_get_info(conn).await);
-                    }
-                    WorkerReq::Download { hash, callback } => todo!(),
-                    WorkerReq::Play {
-                        game_hash,
-                        callback,
-                    } => {
-                        background.spawn(process_play(PlayArgs {
-                            id: play_socket_counter,
-                            conn,
+                    match cmd {
+                        WorkerReq::GetInfo { callback } => {
+                            callback.finish(process_get_info(conn).await);
+                        }
+                        WorkerReq::Download { hash, callback } => todo!(),
+                        WorkerReq::Play {
                             game_hash,
-                            hash_already_verified,
                             callback,
-                        }));
+                        } => {
+                            background
+                                .clone()
+                                .spawn(process_play(PlayArgs {
+                                    id: play_socket_counter,
+                                    background,
+                                    conn,
+                                    game_hash,
+                                    hash_already_verified,
+                                    callback,
+                                }))
+                                .forget();
+                        }
                     }
                 }
-            }
-            .instrument(info_span!("task worker", task = task_counter))
-        });
+                .instrument(info_span!("task worker", task = task_counter))
+            })
+            .forget();
 
         task_counter += 1;
         play_socket_counter += 1;
@@ -401,15 +427,25 @@ async fn process_get_info(conn: quinn::Connection) -> anyhow::Result<game::CbSer
 
 struct PlayArgs {
     id: u64,
+    background: BackgroundTasks<App>,
     conn: quinn::Connection,
     game_hash: blake3::Hash,
     hash_already_verified: Arc<AtomicBool>,
     callback: NetworkPromise<Result<GameSocket, blake3::Hash>>,
 }
 
+#[derive(Debug)]
+enum PlayReq {
+    SendMsg {
+        data: HostSlice<u8>,
+        callback: NetworkPromise<()>,
+    },
+}
+
 async fn process_play(args: PlayArgs) {
     let PlayArgs {
         id,
+        background,
         conn,
         game_hash,
         hash_already_verified,
@@ -473,8 +509,30 @@ async fn process_play(args: PlayArgs) {
         }
     };
 
-    callback.accept(Ok(GameSocket {}));
+    let (req_tx, mut req_rx) = mpsc::unbounded_channel();
+
+    callback.accept(Ok(GameSocket { id, req_tx }));
 
     // Process messages
-    // TODO
+    while let Some(req) = req_rx.recv().await {
+        match req {
+            PlayReq::SendMsg { data, callback } => {
+                callback
+                    .resolve_cancellable(async {
+                        let data = background.acquire_state(|_, app| {
+                            let init = app.init.as_mut().unwrap();
+
+                            init.store.run_wsl_root(&mut app.world, |cx| {
+                                data.slice().read(cx).map(|v| v.to_vec())
+                            })
+                        })?;
+
+                        send_packet(&mut stream_tx, data).await?;
+
+                        Ok(())
+                    })
+                    .await;
+            }
+        }
+    }
 }

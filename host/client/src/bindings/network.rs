@@ -1,6 +1,8 @@
-use arid::{Handle, Strong, W};
+use anyhow::Context;
+use arid::{Handle, Object as _, Strong, W, object};
 use arid_entity::{Component, EntityHandle, component};
 use crucible_abi as abi;
+use futures::future::RemoteHandle;
 use wasmlink_wasmtime::{WslLinker, WslLinkerExt, WslStoreExt};
 
 use crate::{
@@ -13,11 +15,19 @@ use crate::{
 pub struct NetworkBindings {
     endpoint: quinn::Endpoint,
     login_sockets: GuestArena<LoginSocket>,
-    game_sockets: GuestArena<GameSocket>,
+    game_sockets: GuestArena<Strong<GameSocketBindStateHandle>>,
     background: BackgroundTasks<App>,
 }
 
 component!(pub NetworkBindings);
+
+#[derive(Debug)]
+struct GameSocketBindState {
+    socket: GameSocket,
+    send_msg_task: Option<RemoteHandle<Option<()>>>,
+}
+
+object!(GameSocketBindState);
 
 impl NetworkBindingsHandle {
     pub fn new(
@@ -76,7 +86,8 @@ impl NetworkBindingsHandle {
                     })?;
 
                     Ok(())
-                });
+                })
+                .forget();
 
             ret.finish(cx, &())
         })?;
@@ -84,26 +95,29 @@ impl NetworkBindingsHandle {
         linker.define_wsl(abi::LOGIN_SOCKET_GET_INFO, move |cx, args, ret| {
             let w = cx.w();
 
-            self.r(w).background.spawn_responder(
-                self.r(w).login_sockets.get(args.socket.raw)?.info(),
-                move |_event_loop, app, res| {
-                    let init = app.init.as_mut().unwrap();
+            self.r(w)
+                .background
+                .spawn_responder(
+                    self.r(w).login_sockets.get(args.socket.raw)?.info(),
+                    move |_event_loop, app, res| {
+                        let init = app.init.as_mut().unwrap();
 
-                    init.store.run_wsl_root(&mut app.world, |cx| match res {
-                        Ok(info) => args.callback.call(
-                            cx,
-                            &Ok(abi::LoginServerInfo {
-                                motd: &info.motd,
-                                content_hash: abi::ContentHash(*info.content_hash.as_bytes()),
-                                content_server: info.content_server.as_deref(),
-                            }),
-                        ),
-                        Err(err) => args.callback.call(cx, &Err(&err.to_string())),
-                    })?;
+                        init.store.run_wsl_root(&mut app.world, |cx| match res {
+                            Ok(info) => args.callback.call(
+                                cx,
+                                &Ok(abi::LoginServerInfo {
+                                    motd: &info.motd,
+                                    content_hash: abi::ContentHash(*info.content_hash.as_bytes()),
+                                    content_server: info.content_server.as_deref(),
+                                }),
+                            ),
+                            Err(err) => args.callback.call(cx, &Err(&err.to_string())),
+                        })?;
 
-                    Ok(())
-                },
-            );
+                        Ok(())
+                    },
+                )
+                .forget();
 
             ret.finish(cx, &())
         })?;
@@ -125,44 +139,99 @@ impl NetworkBindingsHandle {
         linker.define_wsl(abi::LOGIN_SOCKET_PLAY, move |cx, args, ret| {
             let w = cx.w();
 
-            self.r(w).background.spawn_responder(
-                self.r(w)
-                    .login_sockets
-                    .get(args.socket.raw)?
-                    .play(blake3::Hash::from_bytes(args.content_hash.0)),
+            self.r(w)
+                .background
+                .spawn_responder(
+                    self.r(w)
+                        .login_sockets
+                        .get(args.socket.raw)?
+                        .play(blake3::Hash::from_bytes(args.content_hash.0)),
+                    move |_event_loop, app, res| {
+                        let init = app.init.as_mut().unwrap();
+
+                        init.store
+                            .run_wsl_root::<anyhow::Result<()>>(&mut app.world, |cx| match res {
+                                Ok(Ok(socket)) => {
+                                    let socket = GameSocketBindState {
+                                        socket,
+                                        send_msg_task: None,
+                                    }
+                                    .spawn(cx.w());
+
+                                    let socket = self.m(cx.w()).game_sockets.add(socket)?;
+
+                                    args.callback
+                                        .call(cx, &Ok(Ok(abi::GameSocketHandle { raw: socket })))?;
+
+                                    Ok(())
+                                }
+                                Ok(Err(content_hash)) => {
+                                    args.callback.call(
+                                        cx,
+                                        &Ok(Err(abi::ContentHash(*content_hash.as_bytes()))),
+                                    )?;
+
+                                    Ok(())
+                                }
+                                Err(err) => {
+                                    args.callback.call(cx, &Err(&err.to_string()))?;
+
+                                    Ok(())
+                                }
+                            })?;
+
+                        Ok(())
+                    },
+                )
+                .forget();
+
+            ret.finish(cx, &())
+        })?;
+
+        linker.define_wsl(abi::GAME_SOCKET_GET_ID, move |cx, args, ret| {
+            let w = cx.w();
+            let socket = self.r(w).game_sockets.get(args.raw)?.as_weak();
+            let id = socket.r(w).socket.id();
+
+            ret.finish(cx, &id)
+        })?;
+
+        linker.define_wsl(abi::GAME_SOCKET_SEND_MSG, move |cx, args, ret| {
+            let w = cx.w();
+            let socket = self.r(w).game_sockets.get(args.socket.raw)?.as_weak();
+
+            if socket.r(w).send_msg_task.is_some() {
+                anyhow::bail!("cannot send multiple messages from the same socket simultaneously");
+            }
+
+            socket.m(w).send_msg_task = Some(self.r(w).background.spawn_responder(
+                socket.r(w).socket.send_msg(args.message),
                 move |_event_loop, app, res| {
+                    socket.m(&mut app.world).send_msg_task = None;
+
                     let init = app.init.as_mut().unwrap();
 
-                    init.store.run_wsl_root::<anyhow::Result<()>>(
-                        &mut app.world,
-                        |cx| match res {
-                            Ok(Ok(socket)) => {
-                                let socket = self.m(cx.w()).game_sockets.add(socket)?;
-
-                                args.callback
-                                    .call(cx, &Ok(Ok(abi::GameSocketHandle { raw: socket })))?;
-
-                                Ok(())
-                            }
-                            Ok(Err(content_hash)) => {
-                                args.callback.call(
-                                    cx,
-                                    &Ok(Err(abi::ContentHash(*content_hash.as_bytes()))),
-                                )?;
-
-                                Ok(())
-                            }
-                            Err(err) => {
-                                args.callback.call(cx, &Err(&err.to_string()))?;
-
-                                Ok(())
-                            }
-                        },
-                    )?;
-
-                    Ok(())
+                    init.store
+                        .run_wsl_root::<anyhow::Result<()>>(&mut app.world, |cx| match res {
+                            Ok(()) => args.callback.call(cx, &Ok(())),
+                            Err(err) => args.callback.call(cx, &Err(&err.to_string())),
+                        })
                 },
-            );
+            ));
+
+            ret.finish(cx, &())
+        })?;
+
+        linker.define_wsl(abi::GAME_SOCKET_CANCEL_SEND_MSG, move |cx, args, ret| {
+            let w = cx.w();
+            let socket = self.r(w).game_sockets.get(args.raw)?.as_weak();
+            let task = socket
+                .m(w)
+                .send_msg_task
+                .take()
+                .context("cannot cancel future which is not running")?;
+
+            drop(task);
 
             ret.finish(cx, &())
         })?;

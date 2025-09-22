@@ -553,7 +553,7 @@ impl<'a, T> From<&'a [T]> for GuestSliceRef<'a, T> {
 
 pub type HostSlice<T> = HostSlice_<StrategyOf<T>>;
 
-#[derive_where(Copy, Clone, Hash, Eq, PartialEq)]
+#[derive_where(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct HostSlice_<T: Strategy> {
     slice: FfiSlice<T::Hostbound<'static>>,
