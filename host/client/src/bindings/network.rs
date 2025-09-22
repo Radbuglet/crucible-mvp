@@ -84,11 +84,9 @@ impl NetworkBindingsHandle {
         linker.define_wsl(abi::LOGIN_SOCKET_GET_INFO, move |cx, args, ret| {
             let w = cx.w();
 
-            let info = self.r(w).login_sockets.get(args.socket.raw)?.info();
-
-            self.r(w)
-                .background
-                .spawn_responder(info.recv(), move |_event_loop, app, res| {
+            self.r(w).background.spawn_responder(
+                self.r(w).login_sockets.get(args.socket.raw)?.info(),
+                move |_event_loop, app, res| {
                     let init = app.init.as_mut().unwrap();
 
                     init.store.run_wsl_root(&mut app.world, |cx| match res {
@@ -104,7 +102,8 @@ impl NetworkBindingsHandle {
                     })?;
 
                     Ok(())
-                });
+                },
+            );
 
             ret.finish(cx, &())
         })?;
@@ -126,15 +125,12 @@ impl NetworkBindingsHandle {
         linker.define_wsl(abi::LOGIN_SOCKET_PLAY, move |cx, args, ret| {
             let w = cx.w();
 
-            let play = self
-                .r(w)
-                .login_sockets
-                .get(args.socket.raw)?
-                .play(blake3::Hash::from_bytes(args.content_hash.0));
-
-            self.r(w)
-                .background
-                .spawn_responder(play.recv(), move |_event_loop, app, res| {
+            self.r(w).background.spawn_responder(
+                self.r(w)
+                    .login_sockets
+                    .get(args.socket.raw)?
+                    .play(blake3::Hash::from_bytes(args.content_hash.0)),
+                move |_event_loop, app, res| {
                     let init = app.init.as_mut().unwrap();
 
                     init.store.run_wsl_root::<anyhow::Result<()>>(
@@ -165,7 +161,8 @@ impl NetworkBindingsHandle {
                     )?;
 
                     Ok(())
-                });
+                },
+            );
 
             ret.finish(cx, &())
         })?;

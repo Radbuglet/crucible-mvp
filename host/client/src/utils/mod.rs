@@ -1,3 +1,3 @@
 pub mod arena;
-pub mod sync;
+pub mod promise;
 pub mod winit;

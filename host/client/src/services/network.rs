@@ -29,7 +29,7 @@ use tracing::{Instrument, info_span};
 use crate::{
     app::App,
     utils::{
-        sync::{Promise, PromiseReceiver, promise},
+        promise::{Promise, PromiseFuture, promise},
         winit::BackgroundTasks,
     },
 };
@@ -37,7 +37,7 @@ use crate::{
 // === Type Definitions === //
 
 type NetworkPromise<T> = Promise<T, anyhow::Error>;
-type NetworkPromiseRx<T> = PromiseReceiver<T, anyhow::Error>;
+type NetworkPromiseFuture<T> = PromiseFuture<T, anyhow::Error>;
 
 #[derive(Debug, Clone)]
 pub enum CertValidationMode {
@@ -88,7 +88,7 @@ impl LoginSocket {
             .instrument(span),
         );
 
-        connect_rx.recv().await?;
+        connect_rx.await?;
 
         Ok(Self { req_tx, rtt })
     }
@@ -99,7 +99,7 @@ impl LoginSocket {
         (!rtt.is_nan()).then_some(rtt)
     }
 
-    pub fn info(&self) -> NetworkPromiseRx<game::CbServerList1> {
+    pub fn info(&self) -> NetworkPromiseFuture<game::CbServerList1> {
         let (tx, rx) = promise();
         _ = self.req_tx.send(WorkerReq::GetInfo { callback: tx });
         rx
@@ -108,7 +108,7 @@ impl LoginSocket {
     pub fn play(
         &self,
         game_hash: blake3::Hash,
-    ) -> NetworkPromiseRx<Result<GameSocket, blake3::Hash>> {
+    ) -> NetworkPromiseFuture<Result<GameSocket, blake3::Hash>> {
         let (tx, rx) = promise();
         _ = self.req_tx.send(WorkerReq::Play {
             game_hash,
