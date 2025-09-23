@@ -20,9 +20,9 @@ use quinn::{
         pki_types::{CertificateDer, ServerName, UnixTime},
     },
 };
-use tokio::{
-    net::{ToSocketAddrs, lookup_host},
-    sync::mpsc,
+use smol::{
+    channel,
+    net::{self, AsyncToSocketAddrs},
 };
 use tracing::{Instrument, info_span};
 use wasmlink::HostSlice;
@@ -52,7 +52,7 @@ pub enum CertValidationMode {
 
 #[derive(Debug)]
 pub struct LoginSocket {
-    req_tx: mpsc::UnboundedSender<WorkerReq>,
+    req_tx: channel::Sender<WorkerReq>,
     rtt: Arc<AtomicU64>,
 }
 
@@ -60,14 +60,14 @@ impl LoginSocket {
     pub async fn new(
         background: BackgroundTasks<App>,
         endpoint: quinn::Endpoint,
-        addr: impl 'static + Send + ToSocketAddrs,
+        addr: impl 'static + Send + AsyncToSocketAddrs,
         addr_name: impl Into<String>,
         validation_mode: CertValidationMode,
     ) -> anyhow::Result<Self> {
         let addr_name = addr_name.into();
         let span = info_span!("net worker", name = addr_name.clone());
 
-        let (req_tx, req_rx) = mpsc::unbounded_channel();
+        let (req_tx, req_rx) = channel::unbounded();
         let (connect_tx, connect_rx) = promise();
         let rtt = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
 
@@ -90,7 +90,7 @@ impl LoginSocket {
                 }
                 .instrument(span),
             )
-            .forget();
+            .detach();
 
         connect_rx.await?;
 
@@ -105,7 +105,9 @@ impl LoginSocket {
 
     pub fn info(&self) -> NetworkPromiseFuture<game::CbServerList1> {
         let (tx, rx) = promise();
-        _ = self.req_tx.send(WorkerReq::GetInfo { callback: tx });
+        _ = self
+            .req_tx
+            .send_blocking(WorkerReq::GetInfo { callback: tx });
         rx
     }
 
@@ -114,7 +116,7 @@ impl LoginSocket {
         game_hash: blake3::Hash,
     ) -> NetworkPromiseFuture<Result<GameSocket, blake3::Hash>> {
         let (tx, rx) = promise();
-        _ = self.req_tx.send(WorkerReq::Play {
+        _ = self.req_tx.send_blocking(WorkerReq::Play {
             game_hash,
             callback: tx,
         });
@@ -127,7 +129,7 @@ impl LoginSocket {
 #[derive(Debug)]
 pub struct GameSocket {
     id: u64,
-    req_tx: mpsc::UnboundedSender<PlayReq>,
+    req_tx: channel::Sender<PlayReq>,
 }
 
 impl GameSocket {
@@ -138,7 +140,7 @@ impl GameSocket {
     pub fn send_msg(&self, data: HostSlice<u8>) -> NetworkPromiseFuture<()> {
         let (promise, fut) = promise();
 
-        _ = self.req_tx.send(PlayReq::SendMsg {
+        _ = self.req_tx.send_blocking(PlayReq::SendMsg {
             data,
             callback: promise,
         });
@@ -155,7 +157,7 @@ struct WorkerArgs {
     addr_name: String,
     validation_mode: CertValidationMode,
     rtt: Arc<AtomicU64>,
-    req_rx: mpsc::UnboundedReceiver<WorkerReq>,
+    req_rx: channel::Receiver<WorkerReq>,
     connect_promise: NetworkPromise<()>,
 }
 
@@ -174,14 +176,14 @@ enum WorkerReq {
     },
 }
 
-async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Result<()> {
+async fn run_worker(args: WorkerArgs, addr: impl AsyncToSocketAddrs) -> anyhow::Result<()> {
     let WorkerArgs {
         background,
         endpoint,
         addr_name,
         validation_mode: cert_mode,
         rtt,
-        mut req_rx,
+        req_rx,
         connect_promise,
     } = args;
 
@@ -276,8 +278,9 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
         quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_crypto)?));
 
     // Connect to endpoint and perform login handshake.
-    let addr = lookup_host(addr)
+    let addr = net::resolve(addr)
         .await?
+        .into_iter()
         .next()
         .context("no server address found")?;
 
@@ -309,7 +312,7 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
             }
             .in_current_span()
         })
-        .forget();
+        .detach();
 
     // Start main loop
     tracing::info!("connected to remote host");
@@ -320,7 +323,7 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
     let mut play_socket_counter = 0;
     let hash_already_verified = Arc::new(AtomicBool::new(false));
 
-    while let Some(cmd) = req_rx.recv().await {
+    while let Ok(cmd) = req_rx.recv().await {
         let conn = conn.clone();
         let hash_already_verified = hash_already_verified.clone();
 
@@ -350,13 +353,13 @@ async fn run_worker(args: WorkerArgs, addr: impl ToSocketAddrs) -> anyhow::Resul
                                     hash_already_verified,
                                     callback,
                                 }))
-                                .forget();
+                                .detach();
                         }
                     }
                 }
                 .instrument(info_span!("task worker", task = task_counter))
             })
-            .forget();
+            .detach();
 
         task_counter += 1;
         play_socket_counter += 1;
@@ -395,7 +398,7 @@ async fn process_ping(conn: quinn::Connection, rtt: Arc<AtomicU64>) -> anyhow::R
         rtt.store(last_send.elapsed().as_secs_f64().to_bits(), Relaxed);
 
         // Wait for a new period.
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        smol::Timer::after(Duration::from_millis(1000)).await;
 
         // Send a new ping.
         last_send = Instant::now();
@@ -497,7 +500,7 @@ async fn process_play(args: PlayArgs) {
     })
     .await;
 
-    let (mut stream_tx, mut stream_rx) = match res {
+    let (mut stream_tx, stream_rx) = match res {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             callback.accept(Err(e));
@@ -509,12 +512,12 @@ async fn process_play(args: PlayArgs) {
         }
     };
 
-    let (req_tx, mut req_rx) = mpsc::unbounded_channel();
+    let (req_tx, req_rx) = channel::unbounded();
 
     callback.accept(Ok(GameSocket { id, req_tx }));
 
     // Process messages
-    while let Some(req) = req_rx.recv().await {
+    while let Ok(req) = req_rx.recv().await {
         match req {
             PlayReq::SendMsg { data, callback } => {
                 callback

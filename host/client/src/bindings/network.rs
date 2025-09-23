@@ -2,7 +2,6 @@ use anyhow::Context;
 use arid::{Handle, Object as _, Strong, W, object};
 use arid_entity::{Component, EntityHandle, component};
 use crucible_abi as abi;
-use futures::future::RemoteHandle;
 use wasmlink_wasmtime::{WslLinker, WslLinkerExt, WslStoreExt};
 
 use crate::{
@@ -24,7 +23,7 @@ component!(pub NetworkBindings);
 #[derive(Debug)]
 struct GameSocketBindState {
     socket: GameSocket,
-    send_msg_task: Option<RemoteHandle<Option<()>>>,
+    send_msg_task: Option<smol::Task<Option<()>>>,
 }
 
 object!(GameSocketBindState);
@@ -87,7 +86,7 @@ impl NetworkBindingsHandle {
 
                     Ok(())
                 })
-                .forget();
+                .detach();
 
             ret.finish(cx, &())
         })?;
@@ -117,7 +116,7 @@ impl NetworkBindingsHandle {
                         Ok(())
                     },
                 )
-                .forget();
+                .detach();
 
             ret.finish(cx, &())
         })?;
@@ -183,7 +182,7 @@ impl NetworkBindingsHandle {
                         Ok(())
                     },
                 )
-                .forget();
+                .detach();
 
             ret.finish(cx, &())
         })?;

@@ -3,7 +3,6 @@ use std::{env, fs, sync::Arc};
 use anyhow::Context;
 use arid::{Strong, World};
 use arid_entity::EntityHandle;
-use futures::executor::block_on;
 use wasmlink_wasmtime::{WslLinker, WslStore, WslStoreExt, WslStoreState};
 use winit::{
     event::{KeyEvent, MouseButton, StartCause, WindowEvent},
@@ -90,7 +89,7 @@ impl WinitHandler for App {
             return Ok(());
         }
 
-        block_on(async {
+        smol::block_on(async {
             // Setup graphics
             let window = Arc::new(
                 event_loop.create_window(

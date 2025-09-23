@@ -1,7 +1,8 @@
 use std::{
-    cell::{Cell, RefCell},
-    fmt,
+    cell::Cell,
+    fmt, future,
     panic::{self, AssertUnwindSafe, Location},
+    pin::Pin,
     ptr::NonNull,
     rc::Rc,
     sync::Arc,
@@ -9,12 +10,6 @@ use std::{
 };
 
 use derive_where::derive_where;
-use futures::{
-    StreamExt,
-    future::RemoteHandle,
-    stream::FuturesUnordered,
-    task::{LocalFutureObj, LocalSpawn, LocalSpawnExt, SpawnError},
-};
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, DeviceId, StartCause, WindowEvent},
@@ -42,8 +37,8 @@ pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> 
         handler: &'a mut H,
         _waker: Arc<WinitWaker>,
         erased_waker: task::Waker,
-        futures: FuturesUnordered<LocalFutureObj<'static, ()>>,
         background: BackgroundTasks<H>,
+        executor_future: Pin<Box<dyn Future<Output = ()>>>,
         error: Option<anyhow::Error>,
     }
 
@@ -119,26 +114,13 @@ pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> 
             self.exec_scoped(event_loop, |this| {
                 this.handler.about_to_wait(event_loop, &this.background)?;
 
-                let _enter =
-                    futures::executor::enter().expect("cannot run task executors reentrantly");
-
                 this.background.provide_state(event_loop, this.handler, || {
-                    loop {
-                        // Attempt to make progress.
-                        _ = this
-                            .futures
-                            .poll_next_unpin(&mut task::Context::from_waker(&this.erased_waker));
+                    let res = this
+                        .executor_future
+                        .as_mut()
+                        .poll(&mut task::Context::from_waker(&this.erased_waker));
 
-                        // If that progress resulted in more tasks being spawned, try to update them.
-                        let mut incoming = this.background.inner.incoming.borrow_mut();
-                        if !incoming.is_empty() {
-                            this.futures.extend(incoming.drain(..));
-                            continue;
-                        }
-                        drop(incoming);
-
-                        break;
-                    }
+                    debug_assert!(res.is_pending());
                 });
 
                 if let Some(err) = this.background.inner.error.take() {
@@ -172,9 +154,14 @@ pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> 
         inner: Rc::new(BackgroundTasksInner {
             state: Cell::new(TaskAppState::Unset),
             error: Cell::new(None),
-            incoming: RefCell::new(Vec::new()),
+            executor: smol::LocalExecutor::new(),
         }),
     };
+
+    let executor_future = Box::pin({
+        let background = background.clone();
+        async move { background.inner.executor.run(future::pending::<()>()).await }
+    });
 
     let waker = Arc::new(WinitWaker {
         proxy: event_loop.create_proxy(),
@@ -185,8 +172,8 @@ pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> 
         handler,
         _waker: waker,
         erased_waker,
-        futures: FuturesUnordered::new(),
         background,
+        executor_future,
         error: None,
     };
 
@@ -286,7 +273,7 @@ pub struct BackgroundTasks<T: 'static> {
 struct BackgroundTasksInner<T> {
     state: Cell<TaskAppState<T>>,
     error: Cell<Option<anyhow::Error>>,
-    incoming: RefCell<Vec<LocalFutureObj<'static, ()>>>,
+    executor: smol::LocalExecutor<'static>,
 }
 
 enum TaskAppState<T> {
@@ -341,18 +328,14 @@ impl<T: 'static> BackgroundTasks<T> {
         f(unsafe { event_loop.as_mut() }, unsafe { state.as_mut() })
     }
 
-    pub fn raw_spawner(&self) -> BackgroundTasksRawSpawner<'_, T> {
-        BackgroundTasksRawSpawner(self)
-    }
-
-    pub fn spawn<O: 'static>(&self, f: impl 'static + Future<Output = O>) -> RemoteHandle<O> {
-        self.raw_spawner().spawn_local_with_handle(f).unwrap()
+    pub fn spawn<O: 'static>(&self, f: impl 'static + Future<Output = O>) -> smol::Task<O> {
+        self.inner.executor.spawn(f)
     }
 
     pub fn spawn_fallible<O: 'static>(
         &self,
         f: impl 'static + Future<Output = anyhow::Result<O>>,
-    ) -> RemoteHandle<Option<O>> {
+    ) -> smol::Task<Option<O>> {
         let me = self.clone();
 
         self.spawn(async move {
@@ -370,7 +353,7 @@ impl<T: 'static> BackgroundTasks<T> {
         &self,
         fut: impl 'static + Future<Output = V>,
         resp: impl 'static + FnOnce(&ActiveEventLoop, &mut T, V) -> anyhow::Result<O>,
-    ) -> RemoteHandle<Option<O>>
+    ) -> smol::Task<Option<O>>
     where
         V: 'static,
         O: 'static,
@@ -385,15 +368,5 @@ impl<T: 'static> BackgroundTasks<T> {
 
     fn report_error(&self, error: anyhow::Error) {
         self.inner.error.set(Some(error));
-    }
-}
-
-#[derive_where(Debug, Clone)]
-pub struct BackgroundTasksRawSpawner<'a, T: 'static>(pub &'a BackgroundTasks<T>);
-
-impl<T: 'static> LocalSpawn for BackgroundTasksRawSpawner<'_, T> {
-    fn spawn_local_obj(&self, future: LocalFutureObj<'static, ()>) -> Result<(), SpawnError> {
-        self.0.inner.incoming.borrow_mut().push(future);
-        Ok(())
     }
 }

@@ -30,9 +30,6 @@ fn main() -> anyhow::Result<()> {
         .ok()
         .context("failed to install AWS-LC crypto provider")?;
 
-    let rt = tokio::runtime::Runtime::new()?;
-    let _guard = rt.enter();
-
     app::main_inner()?;
 
     Ok(())

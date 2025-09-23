@@ -39,7 +39,7 @@ default-features = false
 # Use `aws-lc-rs` because that's what `librice` favors.
 #  We don't use the `platform-verifier` feature directly because we instantiate the
 #  `rustls-platform-verifier` verifier directly.
-features = ["bloom", "log", "runtime-tokio", "rustls-aws-lc-rs"]
+features = ["bloom", "log", "runtime-smol", "rustls-aws-lc-rs"]
 
 [profile.dev.package."*"]
 opt-level = 2
