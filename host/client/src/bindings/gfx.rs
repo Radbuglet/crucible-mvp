@@ -3,14 +3,12 @@ use std::mem;
 use arid::{Handle, MayDangle, Strong, W, Wr};
 use arid_entity::{Component, EntityHandle, component};
 use crucible_abi as abi;
+use crucible_host_shared::guest::arena::GuestArena;
 use glam::Affine2;
 use wasmlink::HostClosure;
 use wasmlink_wasmtime::{WslLinker, WslLinkerExt};
 
-use crate::{
-    services::window::{WindowManagerHandle, WindowStateHandle},
-    utils::arena::GuestArena,
-};
+use crate::services::window::{WindowManagerHandle, WindowStateHandle};
 
 #[derive(Debug)]
 pub struct GfxBindings {

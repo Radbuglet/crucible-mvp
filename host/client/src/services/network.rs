@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::Context as _;
+use crucible_host_shared::guest::promise::{Promise, PromiseFuture, promise};
 use crucible_protocol::{
     codec::{DecodeCodec, EncodeCodec, FrameDecoder, FrameEncoder, recv_packet, send_packet},
     game,
@@ -28,13 +29,7 @@ use tracing::{Instrument, info_span};
 use wasmlink::HostSlice;
 use wasmlink_wasmtime::WslStoreExt;
 
-use crate::{
-    app::App,
-    utils::{
-        promise::{Promise, PromiseFuture, promise},
-        winit::BackgroundTasks,
-    },
-};
+use crate::{app::App, utils::winit::BackgroundTasks};
 
 // === Type Definitions === //
 

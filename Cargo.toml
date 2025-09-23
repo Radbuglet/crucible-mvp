@@ -12,7 +12,7 @@ members = [
     "utils/wasmlink-wasmtime",
     "utils/wasmlink",
     "utils/wasmall",
-    "utils/push-fastcdc",
+    "utils/push-fastcdc", "host/shared",
 ]
 
 [workspace.dependencies]

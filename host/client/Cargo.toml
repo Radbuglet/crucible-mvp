@@ -1,5 +1,5 @@
 [package]
-name = "crucible-client"
+name = "crucible-host-client"
 version = "0.1.0"
 edition = "2024"
 
@@ -30,6 +30,7 @@ bytemuck = "1.23.2"
 thiserror = "2.0.16"
 scopeguard = "1.2.0"
 smol = "2.0.2"
+crucible-host-shared = { version = "0.1.0", path = "../shared" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = "0.3.1"

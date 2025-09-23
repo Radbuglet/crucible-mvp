@@ -9,9 +9,8 @@ use anyhow::Context;
 use arid::{Handle, Strong, W, Wr};
 use arid_entity::{Component as _, EntityHandle, component};
 use crucible_abi::{self as abi, RunMode};
+use crucible_host_shared::guest::arena::GuestArena;
 use wasmlink_wasmtime::{WslContext, WslLinker, WslLinkerExt};
-
-use crate::utils::arena::GuestArena;
 
 #[derive(Debug)]
 pub struct EnvBindings {

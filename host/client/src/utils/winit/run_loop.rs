@@ -1,21 +1,19 @@
 use std::{
-    cell::Cell,
-    fmt, future,
-    panic::{self, AssertUnwindSafe, Location},
-    pin::Pin,
-    ptr::NonNull,
-    rc::Rc,
+    panic::{self, AssertUnwindSafe},
     sync::Arc,
     task,
 };
 
-use derive_where::derive_where;
+use crucible_host_shared::guest::background::{self, BackgroundTaskExecutor};
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, DeviceId, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     window::WindowId,
 };
+
+pub type BackgroundTasks<T> = background::BackgroundTasks<ActiveEventLoop, T>;
+pub type BackgroundTasksExecutor<T> = background::BackgroundTaskExecutor<ActiveEventLoop, T>;
 
 pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> anyhow::Result<()> {
     struct WinitWaker {
@@ -37,8 +35,7 @@ pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> 
         handler: &'a mut H,
         _waker: Arc<WinitWaker>,
         erased_waker: task::Waker,
-        background: BackgroundTasks<H>,
-        executor_future: Pin<Box<dyn Future<Output = ()>>>,
+        background: BackgroundTasksExecutor<H>,
         error: Option<anyhow::Error>,
     }
 
@@ -72,13 +69,14 @@ pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> 
     {
         fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
             self.exec_scoped(event_loop, |this| {
-                this.handler.new_events(event_loop, &this.background, cause)
+                this.handler
+                    .new_events(event_loop, this.background.handle(), cause)
             });
         }
 
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
             self.exec_scoped(event_loop, |this| {
-                this.handler.resumed(event_loop, &this.background)
+                this.handler.resumed(event_loop, this.background.handle())
             });
         }
 
@@ -94,7 +92,7 @@ pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> 
         ) {
             self.exec_scoped(event_loop, |this| {
                 this.handler
-                    .window_event(event_loop, &this.background, window_id, event)
+                    .window_event(event_loop, this.background.handle(), window_id, event)
             });
         }
 
@@ -106,62 +104,44 @@ pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> 
         ) {
             self.exec_scoped(event_loop, |this| {
                 this.handler
-                    .device_event(event_loop, &this.background, device_id, event)
+                    .device_event(event_loop, this.background.handle(), device_id, event)
             });
         }
 
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
             self.exec_scoped(event_loop, |this| {
-                this.handler.about_to_wait(event_loop, &this.background)?;
+                this.handler
+                    .about_to_wait(event_loop, this.background.handle())?;
 
-                this.background.provide_state(event_loop, this.handler, || {
-                    let res = this
-                        .executor_future
-                        .as_mut()
-                        .poll(&mut task::Context::from_waker(&this.erased_waker));
-
-                    debug_assert!(res.is_pending());
-                });
-
-                if let Some(err) = this.background.inner.error.take() {
-                    return Err(err);
-                }
-
-                Ok(())
+                this.background.poll(
+                    event_loop,
+                    this.handler,
+                    &mut task::Context::from_waker(&this.erased_waker),
+                )
             });
         }
 
         fn suspended(&mut self, event_loop: &ActiveEventLoop) {
             self.exec_scoped(event_loop, |this| {
-                this.handler.suspended(event_loop, &this.background)
+                this.handler.suspended(event_loop, this.background.handle())
             });
         }
 
         fn exiting(&mut self, event_loop: &ActiveEventLoop) {
             self.exec_scoped(event_loop, |this| {
-                this.handler.exiting(event_loop, &this.background)
+                this.handler.exiting(event_loop, this.background.handle())
             });
         }
 
         fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
             self.exec_scoped(event_loop, |this| {
-                this.handler.memory_warning(event_loop, &this.background)
+                this.handler
+                    .memory_warning(event_loop, this.background.handle())
             });
         }
     }
 
-    let background = BackgroundTasks {
-        inner: Rc::new(BackgroundTasksInner {
-            state: Cell::new(TaskAppState::Unset),
-            error: Cell::new(None),
-            executor: smol::LocalExecutor::new(),
-        }),
-    };
-
-    let executor_future = Box::pin({
-        let background = background.clone();
-        async move { background.inner.executor.run(future::pending::<()>()).await }
-    });
+    let background = BackgroundTaskExecutor::default();
 
     let waker = Arc::new(WinitWaker {
         proxy: event_loop.create_proxy(),
@@ -173,7 +153,6 @@ pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> 
         _waker: waker,
         erased_waker,
         background,
-        executor_future,
         error: None,
     };
 
@@ -262,111 +241,5 @@ pub trait WinitHandler: Sized + 'static {
         let _ = (event_loop, background);
 
         Ok(())
-    }
-}
-
-#[derive_where(Clone)]
-pub struct BackgroundTasks<T: 'static> {
-    inner: Rc<BackgroundTasksInner<T>>,
-}
-
-struct BackgroundTasksInner<T> {
-    state: Cell<TaskAppState<T>>,
-    error: Cell<Option<anyhow::Error>>,
-    executor: smol::LocalExecutor<'static>,
-}
-
-enum TaskAppState<T> {
-    Set(NonNull<ActiveEventLoop>, NonNull<T>),
-    Unset,
-    Borrowed(&'static Location<'static>),
-}
-
-impl<T: 'static> fmt::Debug for BackgroundTasks<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BackgroundTasks").finish_non_exhaustive()
-    }
-}
-
-impl<T: 'static> BackgroundTasks<T> {
-    fn provide_state<R>(
-        &self,
-        event_loop: &ActiveEventLoop,
-        state: &mut T,
-        f: impl FnOnce() -> R,
-    ) -> R {
-        let _guard_state = scopeguard::guard(
-            self.inner.state.replace(TaskAppState::Set(
-                NonNull::from(event_loop),
-                NonNull::from(state),
-            )),
-            |old| {
-                self.inner.state.set(old);
-            },
-        );
-
-        f()
-    }
-
-    #[track_caller]
-    pub fn acquire_state<R>(&self, f: impl FnOnce(&ActiveEventLoop, &mut T) -> R) -> R {
-        let mut state = scopeguard::guard(
-            self.inner
-                .state
-                .replace(TaskAppState::Borrowed(Location::caller())),
-            |old| {
-                self.inner.state.set(old);
-            },
-        );
-
-        let (event_loop, state) = match &mut *state {
-            TaskAppState::Set(a, b) => (a, b),
-            TaskAppState::Unset => panic!("no app state bound"),
-            TaskAppState::Borrowed(location) => panic!("app state already acquired at {location}"),
-        };
-
-        f(unsafe { event_loop.as_mut() }, unsafe { state.as_mut() })
-    }
-
-    pub fn spawn<O: 'static>(&self, f: impl 'static + Future<Output = O>) -> smol::Task<O> {
-        self.inner.executor.spawn(f)
-    }
-
-    pub fn spawn_fallible<O: 'static>(
-        &self,
-        f: impl 'static + Future<Output = anyhow::Result<O>>,
-    ) -> smol::Task<Option<O>> {
-        let me = self.clone();
-
-        self.spawn(async move {
-            match f.await {
-                Ok(val) => Some(val),
-                Err(err) => {
-                    me.report_error(err);
-                    None
-                }
-            }
-        })
-    }
-
-    pub fn spawn_responder<V, O>(
-        &self,
-        fut: impl 'static + Future<Output = V>,
-        resp: impl 'static + FnOnce(&ActiveEventLoop, &mut T, V) -> anyhow::Result<O>,
-    ) -> smol::Task<Option<O>>
-    where
-        V: 'static,
-        O: 'static,
-    {
-        let me = self.clone();
-
-        self.spawn_fallible(async move {
-            let res = fut.await;
-            me.acquire_state(|event_loop, state| resp(event_loop, state, res))
-        })
-    }
-
-    fn report_error(&self, error: anyhow::Error) {
-        self.inner.error.set(Some(error));
     }
 }

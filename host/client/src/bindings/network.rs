@@ -2,12 +2,13 @@ use anyhow::Context;
 use arid::{Handle, Object as _, Strong, W, object};
 use arid_entity::{Component, EntityHandle, component};
 use crucible_abi as abi;
+use crucible_host_shared::guest::arena::GuestArena;
 use wasmlink_wasmtime::{WslLinker, WslLinkerExt, WslStoreExt};
 
 use crate::{
     app::App,
     services::network::{CertValidationMode, GameSocket, LoginSocket},
-    utils::{arena::GuestArena, winit::BackgroundTasks},
+    utils::winit::BackgroundTasks,
 };
 
 #[derive(Debug)]

@@ -11,7 +11,7 @@
 //! like [QUIC] to connect the two peers and the party server protocol to establish a proxied
 //! connection between the peers.
 //!
-//! Currently, this is just a wrapper around [`rice-proto`] which is can interop with `tokio`.
+//! Currently, this is just a wrapper around [`rice-proto`] which is can interop with `smol`.
 //! Ideally, however, we'd like to eventually adopt [some techniques from Tailscale] to achieve
 //! better connectivity.
 //!

@@ -1,8 +1,8 @@
 client: build-guest
-    cargo run --bin crucible-client -- ./target/wasm32-unknown-unknown/debug/demo-game.wasm
+    cargo run --bin crucible-host-client -- ./target/wasm32-unknown-unknown/debug/demo-game.wasm
 
 server: build-guest
-    cargo run -p crucible-server -- target/wasm32-unknown-unknown/debug/demo-game.wasm
+    cargo run -p crucible-host-server -- target/wasm32-unknown-unknown/debug/demo-game.wasm
 
 build-guest:
     cargo rustc -p demo-game --target wasm32-unknown-unknown -- -C link-args="--emit-relocs"
