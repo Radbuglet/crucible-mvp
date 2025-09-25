@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::rc::Rc;
 
 use anyhow::Context as _;
 use crucible_protocol::{
@@ -9,15 +9,17 @@ use crucible_protocol::{
     game,
 };
 use quinn::{ConnectionError, RecvStream, SendStream};
-use tokio::io::AsyncWriteExt;
+use tokio::io::AsyncWriteExt as _;
 use tracing::{Instrument as _, info_span};
 use wasmall::format::WasmallArchive;
+
+use crate::app::BackgroundTasks;
 
 // === Configs === //
 
 #[derive(Debug, Clone)]
 pub enum ContentConfig {
-    SelfHosted(Arc<WasmallArchive>),
+    SelfHosted(Rc<WasmallArchive>),
     Content {
         index_hash: blake3::Hash,
         server_url: String,
@@ -29,6 +31,7 @@ pub enum ContentConfig {
 /// Engine state that can be shared across multiple worker tasks.
 #[derive(Debug)]
 pub struct GlobalState {
+    background: BackgroundTasks,
     content: ContentState,
 }
 
@@ -39,8 +42,9 @@ struct ContentState {
 }
 
 impl GlobalState {
-    pub fn new(content_config: ContentConfig) -> Self {
+    pub fn new(background: BackgroundTasks, content_config: ContentConfig) -> Self {
         Self {
+            background,
             content: ContentState {
                 index_hash: match &content_config {
                     ContentConfig::SelfHosted(archive) => blake3::hash(&archive.index_buf),
@@ -51,7 +55,7 @@ impl GlobalState {
         }
     }
 
-    pub async fn listen(self: Arc<Self>, endpoint: quinn::Endpoint) -> anyhow::Result<()> {
+    pub async fn listen(self: Rc<Self>, endpoint: quinn::Endpoint) -> anyhow::Result<()> {
         let mut id_gen = 0u64;
 
         loop {
@@ -59,17 +63,19 @@ impl GlobalState {
                 break;
             };
 
-            tokio::spawn(
-                handle_quinn_net_task(self.clone().process_conn(conn))
-                    .instrument(info_span!("connection", id = id_gen)),
-            );
+            self.background
+                .spawn(
+                    handle_quinn_net_task(self.clone().process_conn(conn))
+                        .instrument(info_span!("connection", id = id_gen)),
+                )
+                .detach();
             id_gen += 1;
         }
 
         Ok(())
     }
 
-    async fn process_conn(self: Arc<Self>, conn: quinn::Incoming) -> anyhow::Result<()> {
+    async fn process_conn(self: Rc<Self>, conn: quinn::Incoming) -> anyhow::Result<()> {
         tracing::info!(
             "got remote connection from address {}",
             conn.remote_address()
@@ -93,10 +99,12 @@ impl GlobalState {
             let tx = wrap_stream_tx(tx);
             let rx = wrap_stream_rx(rx, 64);
 
-            tokio::spawn(
-                handle_quinn_net_task(self.clone().process_stream(tx, rx))
-                    .instrument(info_span!("stream", id = id_gen)),
-            );
+            self.background
+                .spawn(
+                    handle_quinn_net_task(self.clone().process_stream(tx, rx))
+                        .instrument(info_span!("stream", id = id_gen)),
+                )
+                .detach();
             id_gen += 1;
         }
 
@@ -104,7 +112,7 @@ impl GlobalState {
     }
 
     async fn process_stream(
-        self: Arc<Self>,
+        self: Rc<Self>,
         mut tx: FrameEncoder<SendStream>,
         mut rx: FrameDecoder<RecvStream>,
     ) -> anyhow::Result<()> {
@@ -193,6 +201,10 @@ impl GlobalState {
                 }
 
                 send_packet(&mut tx, game::CbPlayRes::Ready).await?;
+
+                while let Some(msg) = recv_packet::<Vec<u8>>(&mut rx).await? {
+                    tracing::info!("Received message: {msg:?}");
+                }
             }
             game::SbHello1::PlayUnchecked { id } => {
                 tracing::info!("client wants to play game with ID {id:?}");

@@ -1,10 +1,11 @@
 use std::{
+    future,
     panic::{self, AssertUnwindSafe},
     sync::Arc,
     task,
 };
 
-use crucible_host_shared::guest::background::{self, BackgroundTaskExecutor};
+use crucible_host_shared::guest::background;
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, DeviceId, StartCause, WindowEvent},
@@ -13,7 +14,7 @@ use winit::{
 };
 
 pub type BackgroundTasks<T> = background::BackgroundTasks<ActiveEventLoop, T>;
-pub type BackgroundTasksExecutor<T> = background::BackgroundTaskExecutor<ActiveEventLoop, T>;
+type BackgroundTasksExecutor<T> = background::BackgroundTaskExecutor<ActiveEventLoop, T, ()>;
 
 pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> anyhow::Result<()> {
     struct WinitWaker {
@@ -113,11 +114,16 @@ pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> 
                 this.handler
                     .about_to_wait(event_loop, this.background.handle())?;
 
-                this.background.poll(
+                let res = this.background.poll(
                     event_loop,
                     this.handler,
                     &mut task::Context::from_waker(&this.erased_waker),
-                )
+                );
+
+                match res {
+                    task::Poll::Ready(v) => v,
+                    task::Poll::Pending => Ok(()),
+                }
             });
         }
 
@@ -141,7 +147,7 @@ pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> 
         }
     }
 
-    let background = BackgroundTaskExecutor::default();
+    let background = BackgroundTasks::new().executor(future::pending());
 
     let waker = Arc::new(WinitWaker {
         proxy: event_loop.create_proxy(),
