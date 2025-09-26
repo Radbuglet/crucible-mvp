@@ -5,16 +5,13 @@ use std::{
     task,
 };
 
-use crucible_host_shared::guest::background;
+use crucible_host_shared::lang::{BackgroundTasks, BackgroundTasksExecutor};
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, DeviceId, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     window::WindowId,
 };
-
-pub type BackgroundTasks<T> = background::BackgroundTasks<ActiveEventLoop, T>;
-type BackgroundTasksExecutor<T> = background::BackgroundTaskExecutor<ActiveEventLoop, T, ()>;
 
 pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> anyhow::Result<()> {
     struct WinitWaker {
@@ -36,7 +33,7 @@ pub fn run_winit(event_loop: EventLoop<()>, handler: &mut impl WinitHandler) -> 
         handler: &'a mut H,
         _waker: Arc<WinitWaker>,
         erased_waker: task::Waker,
-        background: BackgroundTasksExecutor<H>,
+        background: BackgroundTasksExecutor<ActiveEventLoop, H, ()>,
         error: Option<anyhow::Error>,
     }
 
@@ -175,7 +172,7 @@ pub trait WinitHandler: Sized + 'static {
     fn new_events(
         &mut self,
         event_loop: &ActiveEventLoop,
-        background: &BackgroundTasks<Self>,
+        background: &BackgroundTasks<ActiveEventLoop, Self>,
         cause: StartCause,
     ) -> anyhow::Result<()> {
         let _ = (event_loop, background, cause);
@@ -186,13 +183,13 @@ pub trait WinitHandler: Sized + 'static {
     fn resumed(
         &mut self,
         event_loop: &ActiveEventLoop,
-        background: &BackgroundTasks<Self>,
+        background: &BackgroundTasks<ActiveEventLoop, Self>,
     ) -> anyhow::Result<()>;
 
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        background: &BackgroundTasks<Self>,
+        background: &BackgroundTasks<ActiveEventLoop, Self>,
         window_id: WindowId,
         event: WindowEvent,
     ) -> anyhow::Result<()>;
@@ -200,7 +197,7 @@ pub trait WinitHandler: Sized + 'static {
     fn device_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        background: &BackgroundTasks<Self>,
+        background: &BackgroundTasks<ActiveEventLoop, Self>,
         device_id: DeviceId,
         event: DeviceEvent,
     ) -> anyhow::Result<()> {
@@ -212,7 +209,7 @@ pub trait WinitHandler: Sized + 'static {
     fn about_to_wait(
         &mut self,
         event_loop: &ActiveEventLoop,
-        background: &BackgroundTasks<Self>,
+        background: &BackgroundTasks<ActiveEventLoop, Self>,
     ) -> anyhow::Result<()> {
         let _ = (event_loop, background);
 
@@ -222,7 +219,7 @@ pub trait WinitHandler: Sized + 'static {
     fn suspended(
         &mut self,
         event_loop: &ActiveEventLoop,
-        background: &BackgroundTasks<Self>,
+        background: &BackgroundTasks<ActiveEventLoop, Self>,
     ) -> anyhow::Result<()> {
         let _ = (event_loop, background);
 
@@ -232,7 +229,7 @@ pub trait WinitHandler: Sized + 'static {
     fn exiting(
         &mut self,
         event_loop: &ActiveEventLoop,
-        background: &BackgroundTasks<Self>,
+        background: &BackgroundTasks<ActiveEventLoop, Self>,
     ) -> anyhow::Result<()> {
         let _ = (event_loop, background);
 
@@ -242,7 +239,7 @@ pub trait WinitHandler: Sized + 'static {
     fn memory_warning(
         &mut self,
         event_loop: &ActiveEventLoop,
-        background: &BackgroundTasks<Self>,
+        background: &BackgroundTasks<ActiveEventLoop, Self>,
     ) -> anyhow::Result<()> {
         let _ = (event_loop, background);
 

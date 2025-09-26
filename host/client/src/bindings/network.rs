@@ -6,9 +6,8 @@ use crucible_host_shared::guest::arena::GuestArena;
 use wasmlink_wasmtime::{WslLinker, WslLinkerExt, WslStoreExt};
 
 use crate::{
-    app::App,
+    app::BackgroundTasks,
     services::network::{CertValidationMode, GameSocket, LoginSocket},
-    utils::winit::BackgroundTasks,
 };
 
 #[derive(Debug)]
@@ -16,7 +15,7 @@ pub struct NetworkBindings {
     endpoint: quinn::Endpoint,
     login_sockets: GuestArena<LoginSocket>,
     game_sockets: GuestArena<Strong<GameSocketBindStateHandle>>,
-    background: BackgroundTasks<App>,
+    background: BackgroundTasks,
 }
 
 component!(pub NetworkBindings);
@@ -32,7 +31,7 @@ object!(GameSocketBindState);
 impl NetworkBindingsHandle {
     pub fn new(
         owner: EntityHandle,
-        background: BackgroundTasks<App>,
+        background: BackgroundTasks,
         w: W,
     ) -> anyhow::Result<Strong<Self>> {
         let endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())?;

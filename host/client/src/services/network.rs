@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::Context as _;
-use crucible_host_shared::guest::promise::{Promise, PromiseFuture, promise};
+use crucible_host_shared::lang::{Promise, PromiseFuture, promise};
 use crucible_protocol::{
     codec::{DecodeCodec, EncodeCodec, FrameDecoder, FrameEncoder, recv_packet, send_packet},
     game,
@@ -29,7 +29,7 @@ use tracing::{Instrument, info_span};
 use wasmlink::HostSlice;
 use wasmlink_wasmtime::WslStoreExt;
 
-use crate::{app::App, utils::winit::BackgroundTasks};
+use crate::app::BackgroundTasks;
 
 // === Type Definitions === //
 
@@ -53,7 +53,7 @@ pub struct LoginSocket {
 
 impl LoginSocket {
     pub async fn new(
-        background: BackgroundTasks<App>,
+        background: BackgroundTasks,
         endpoint: quinn::Endpoint,
         addr: impl 'static + Send + AsyncToSocketAddrs,
         addr_name: impl Into<String>,
@@ -147,7 +147,7 @@ impl GameSocket {
 // === Worker === //
 
 struct WorkerArgs {
-    background: BackgroundTasks<App>,
+    background: BackgroundTasks,
     endpoint: quinn::Endpoint,
     addr_name: String,
     validation_mode: CertValidationMode,
@@ -425,7 +425,7 @@ async fn process_get_info(conn: quinn::Connection) -> anyhow::Result<game::CbSer
 
 struct PlayArgs {
     id: u64,
-    background: BackgroundTasks<App>,
+    background: BackgroundTasks,
     conn: quinn::Connection,
     game_hash: blake3::Hash,
     hash_already_verified: Arc<AtomicBool>,

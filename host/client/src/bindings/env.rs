@@ -85,14 +85,14 @@ impl EnvBindingsHandle {
             out.finish(cx, &self.current_time(cx.wr()))
         })?;
 
-        linker.define_wsl(abi::SPAWN_TIMEOUT, move |cx, msg, out| {
+        linker.define_wsl(abi::SPAWN_TIMEOUT, move |cx, req, out| {
             let w = cx.w();
 
-            let expires_at = match msg.expires_at.classify() {
-                FpCategory::Zero | FpCategory::Normal => msg.expires_at,
+            let expires_at = match req.expires_at.classify() {
+                FpCategory::Zero | FpCategory::Normal => req.expires_at,
                 FpCategory::Subnormal => 0.0,
                 FpCategory::Nan | FpCategory::Infinite => {
-                    anyhow::bail!("invalid timeout {:?}", msg.expires_at)
+                    anyhow::bail!("invalid timeout {:?}", req.expires_at)
                 }
             };
 
@@ -100,23 +100,23 @@ impl EnvBindingsHandle {
 
             self.m(w)
                 .timeout_queue
-                .insert(IdentifiedTimeout { expires_at, handle }, msg.handler);
+                .insert(IdentifiedTimeout { expires_at, handle }, req.handler);
 
             out.finish(cx, &abi::TimeoutHandle { raw: handle })
         })?;
 
-        linker.define_wsl(abi::CLEAR_TIMEOUT, move |cx, msg, out| {
+        linker.define_wsl(abi::CLEAR_TIMEOUT, move |cx, req, out| {
             let w = cx.w();
 
             let time = self
                 .m(w)
                 .timeout_handles
-                .remove(msg.raw)
+                .remove(req.raw)
                 .context("invalid timeout handle")?;
 
             self.m(w).timeout_queue.remove(&IdentifiedTimeout {
                 expires_at: time,
-                handle: msg.raw,
+                handle: req.raw,
             });
 
             out.finish(cx, &())

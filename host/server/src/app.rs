@@ -2,7 +2,7 @@ use std::{env, net::SocketAddr, rc::Rc, str::FromStr, sync::Arc};
 
 use anyhow::Context as _;
 use arid::World;
-use crucible_host_shared::guest::background;
+use crucible_host_shared::lang;
 use quinn::{
     crypto::rustls::QuicServerConfig,
     rustls::{self, crypto, pki_types::PrivatePkcs8KeyDer},
@@ -11,7 +11,7 @@ use wasmall::encode::{SplitModuleArgs, split_module};
 
 use crate::worker::{ContentConfig, GlobalState};
 
-pub type BackgroundTasks = background::BackgroundTasks<(), App>;
+pub type BackgroundTasks = lang::BackgroundTasks<(), App>;
 
 #[derive(Debug)]
 pub struct App {

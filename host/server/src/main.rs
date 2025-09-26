@@ -1,9 +1,8 @@
 use arid::World;
-use crucible_host_shared::guest::background::BackgroundTasks;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
-use crate::app::App;
+use crate::app::{App, BackgroundTasks};
 
 mod app;
 mod worker;

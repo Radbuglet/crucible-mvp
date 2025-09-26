@@ -1203,6 +1203,7 @@ dependencies = [
  "anyhow",
  "derive-where",
  "scopeguard",
+ "smallbox",
  "smol",
  "thiserror 2.0.16",
 ]

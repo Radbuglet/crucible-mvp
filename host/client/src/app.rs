@@ -3,6 +3,7 @@ use std::{env, fs, sync::Arc};
 use anyhow::Context;
 use arid::{Strong, World};
 use arid_entity::EntityHandle;
+use crucible_host_shared::lang;
 use wasmlink_wasmtime::{WslLinker, WslStore, WslStoreExt, WslStoreState};
 use winit::{
     event::{KeyEvent, MouseButton, StartCause, WindowEvent},
@@ -14,8 +15,10 @@ use winit::{
 use crate::{
     bindings::{env::EnvBindingsHandle, gfx::GfxBindingsHandle, network::NetworkBindingsHandle},
     services::window::{WindowManagerHandle, WindowStateHandle, create_gfx_context},
-    utils::winit::{BackgroundTasks, WinitHandler, run_winit},
+    utils::winit::{WinitHandler, run_winit},
 };
+
+pub type BackgroundTasks = lang::BackgroundTasks<ActiveEventLoop, App>;
 
 pub fn main_inner() -> anyhow::Result<()> {
     // Creating windowing services
@@ -81,7 +84,7 @@ impl WinitHandler for App {
     fn resumed(
         &mut self,
         event_loop: &ActiveEventLoop,
-        background: &BackgroundTasks<Self>,
+        background: &BackgroundTasks,
     ) -> anyhow::Result<()> {
         let w = &mut self.world;
 
@@ -159,7 +162,7 @@ impl WinitHandler for App {
     fn new_events(
         &mut self,
         _event_loop: &ActiveEventLoop,
-        _background: &BackgroundTasks<Self>,
+        _background: &BackgroundTasks,
         cause: StartCause,
     ) -> anyhow::Result<()> {
         let Some(init) = &mut self.init else {
@@ -177,7 +180,7 @@ impl WinitHandler for App {
     fn window_event(
         &mut self,
         _event_loop: &ActiveEventLoop,
-        _background: &BackgroundTasks<Self>,
+        _background: &BackgroundTasks,
         window_id: WindowId,
         event: WindowEvent,
     ) -> anyhow::Result<()> {
@@ -334,7 +337,7 @@ impl WinitHandler for App {
     fn about_to_wait(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _background: &BackgroundTasks<Self>,
+        _background: &BackgroundTasks,
     ) -> anyhow::Result<()> {
         let w = &mut self.world;
 
