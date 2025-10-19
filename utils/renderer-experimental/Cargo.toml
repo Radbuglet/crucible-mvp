@@ -1,0 +1,16 @@
+[package]
+name = "crucible-renderer-experimental"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+bytemuck = { version = "1.24.0", features = ["min_const_generics"] }
+crevice = "0.18.0"
+glam = "0.30.8"
+rustc-hash = "2.1.1"
+wgpu.workspace = true
+
+[dev-dependencies]
+async-io = "2.6.0"
+winit = "0.30.12"

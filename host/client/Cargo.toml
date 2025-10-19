@@ -21,7 +21,7 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 wasmlink-wasmtime.workspace = true
 wasmlink.workspace = true
 wasmtime = "35.0.0"
-wgpu = "25.0.2"
+wgpu.workspace = true
 winit = "0.30.11"
 rustls-platform-verifier = "0.6.1"
 smallbox = "0.8.8"

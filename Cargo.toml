@@ -7,12 +7,14 @@ members = [
     "host/client",
     "host/protocol",
     "host/server",
+    "host/shared",
     "utils/glacee",
+    "utils/push-fastcdc",
+    "utils/renderer-experimental",
     "utils/renderer",
+    "utils/wasmall",
     "utils/wasmlink-wasmtime",
     "utils/wasmlink",
-    "utils/wasmall",
-    "utils/push-fastcdc", "host/shared",
 ]
 
 [workspace.dependencies]
@@ -20,10 +22,12 @@ crucible = { path = "guest/crucible" }
 crucible-abi = { path = "guest/crucible-abi" }
 crucible-protocol = { path = "host/protocol" }
 crucible-renderer = { path = "utils/renderer" }
+crucible-renderer-experimental = { path = "utils/renderer-experimental" }
 push-fastcdc = { path = "utils/push-fastcdc" }
 wasmall = { path = "utils/wasmall" }
 wasmlink = { path = "utils/wasmlink" }
 wasmlink-wasmtime = { path = "utils/wasmlink-wasmtime" }
+wgpu = "26.0.1"
 
 [workspace.dependencies.arid]
 git = "https://github.com/Radbuglet/arid.git"

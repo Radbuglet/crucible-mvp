@@ -1,7 +1,6 @@
 use std::{fs::File, io::BufReader};
 
 use crucible_renderer::{Renderer, TEXTURE_FORMAT, required_features};
-use futures::executor::block_on;
 use glam::{Affine2, U8Vec3, U8Vec4, UVec2, Vec2};
 use image::ImageFormat;
 use winit::{
@@ -35,6 +34,7 @@ impl ApplicationHandler for App {
                 backends: wgpu::Backends::PRIMARY,
                 flags: wgpu::InstanceFlags::empty(),
                 backend_options: wgpu::BackendOptions::default(),
+                memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             });
 
             let surface = event_loop
@@ -43,7 +43,7 @@ impl ApplicationHandler for App {
 
             let surface = instance.create_surface(surface).unwrap();
 
-            let (device, queue) = block_on(async {
+            let (device, queue) = async_io::block_on(async {
                 let adapter = instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::None,
