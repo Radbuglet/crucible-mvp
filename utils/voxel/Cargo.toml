@@ -1,10 +1,11 @@
 [package]
-name = "crucible-renderer-experimental"
+name = "crucible-voxel"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+bitflags = "2.10.0"
 bytemuck = { version = "1.24.0", features = ["min_const_generics"] }
 crevice = { version = "0.18.0", features = ["glam"] }
 derive-where = "1.6.0"

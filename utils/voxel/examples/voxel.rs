@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crucible_renderer_experimental::{driver::VoxelRenderer, utils::AssetManager};
+use crucible_voxel::{driver::VoxelRenderer, utils::AssetManager};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
