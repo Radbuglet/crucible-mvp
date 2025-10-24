@@ -6,8 +6,11 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.100"
 bytemuck = { version = "1.24.0", features = ["min_const_generics"] }
-crevice = "0.18.0"
+crevice = { version = "0.18.0", features = ["glam"] }
+derive-where = "1.6.0"
 glam = "0.30.8"
+hashbrown = "0.16.0"
+num-traits = "0.2.19"
 rustc-hash = "2.1.1"
 wgpu.workspace = true
 

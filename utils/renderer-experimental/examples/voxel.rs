@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crucible_renderer_experimental::{driver::VoxelRenderer, utils::AssetManager};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -20,6 +21,7 @@ struct AppState {
     queue: wgpu::Queue,
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
+    renderer: VoxelRenderer,
 }
 
 impl ApplicationHandler for App {
@@ -65,11 +67,14 @@ impl ApplicationHandler for App {
                     .unwrap()
             });
 
+            let renderer = VoxelRenderer::new(device.clone(), AssetManager::default());
+
             AppState {
                 device,
                 queue,
                 window,
                 surface,
+                renderer,
             }
         });
     }
@@ -113,28 +118,7 @@ impl ApplicationHandler for App {
                     .device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &surface_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 0.,
-                                g: 0.,
-                                b: 1.,
-                                a: 1.,
-                            }),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-
-                drop(pass);
+                app.renderer.submit(&mut encoder, &surface_view);
 
                 app.queue.submit([encoder.finish()]);
 

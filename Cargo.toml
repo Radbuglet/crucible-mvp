@@ -22,7 +22,6 @@ crucible = { path = "guest/crucible" }
 crucible-abi = { path = "guest/crucible-abi" }
 crucible-protocol = { path = "host/protocol" }
 crucible-renderer = { path = "utils/renderer" }
-crucible-renderer-experimental = { path = "utils/renderer-experimental" }
 push-fastcdc = { path = "utils/push-fastcdc" }
 wasmall = { path = "utils/wasmall" }
 wasmlink = { path = "utils/wasmlink" }
